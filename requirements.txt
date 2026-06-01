@@ -1,0 +1,22 @@
+# Web Framework & Serialization
+fastapi
+uvicorn[standard]
+orjson
+pydantic
+pydantic-settings
+python-dotenv
+
+# Async HTTP Client for LLM Forwarding
+httpx
+
+# Security & Data Loss Prevention (DLP)
+presidio-analyzer
+presidio-anonymizer
+
+# Embeddings & Vector Cache
+sentence-transformers
+qdrant-client
+
+# Database (PostgreSQL)
+asyncpg
+sqlalchemy

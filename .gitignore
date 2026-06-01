@@ -1,0 +1,8 @@
+# Environments
+venv/
+.env
+
+# Cache & Local Data
+__pycache__/
+data/
+*.sqlite3
