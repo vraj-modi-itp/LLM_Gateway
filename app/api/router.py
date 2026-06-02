@@ -1,48 +1,86 @@
 import time
+import re
+from typing import List, Tuple
 from fastapi import APIRouter, Header, HTTPException, status, BackgroundTasks
 from fastapi.responses import ORJSONResponse
 import httpx
 
-from app.api.schemas import ChatCompletionRequest
+from app.api.schemas import ChatCompletionRequest, ChatMessage
 from app.core.config import settings
 from app.services.dlp import dlp_service
 from app.services.cache import semantic_cache
-from app.services.telemetry import log_transaction 
+from app.services.telemetry import log_transaction_and_routing
 
 router = APIRouter(prefix="/v1")
 
 PROVIDER_URLS = {
     "groq": "https://api.groq.com/openai/v1/chat/completions",
-    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+    "ollama": settings.OLLAMA_BASE_URL
 }
+
+FALLBACK_PRIORITY = {
+    "groq": ["groq", "gemini", "ollama"],
+    "gemini": ["gemini", "groq", "ollama"],
+    "ollama": ["ollama", "groq", "gemini"]
+}
+
+# FIX 4: Per-provider timeouts (seconds)
+PROVIDER_TIMEOUTS = {
+    "groq": 15.0,     # Should be lightning fast, fail quickly if not
+    "gemini": 45.0,   # Allowed more time for massive contexts
+    "ollama": 180.0   # Local CPU execution needs maximum headroom
+}
+
+def classify_intent(messages: List[ChatMessage]) -> Tuple[str, str]:
+    """Analyzes prompt to determine the optimal provider."""
+    user_prompt = next((msg.content for msg in reversed(messages) if msg.role == "user"), "").lower()
+    
+    # FIX 5: Use regex word boundaries to prevent false positives (e.g., "I function well")
+    code_keywords = [r"\bdef\b", r"\bclass\b", r"\bfunction\b", r"\bbug\b", r"\bcompile\b", r"\bsql\b", r"\breact\b", r"\bjava\b"]
+    if any(re.search(kw, user_prompt) for kw in code_keywords):
+        return "groq", "Code/logic detected; routed for speed."
+
+    if len(user_prompt.split()) > 800:
+        return "gemini", "Large context detected; routed for token window."
+
+    return "ollama", "Standard request; routed to local Ollama for zero cost."
+
+def get_provider_auth(provider: str) -> dict:
+    if provider == "groq":
+        return {"Authorization": f"Bearer {settings.GROQ_API_KEY}", "Content-Type": "application/json"}
+    elif provider == "gemini":
+        return {"Authorization": f"Bearer {settings.GEMINI_API_KEY}", "Content-Type": "application/json"}
+    else: 
+        return {"Content-Type": "application/json"}
 
 @router.post("/chat/completions", response_class=ORJSONResponse)
 async def proxy_chat_completion(
     payload: ChatCompletionRequest,
     background_tasks: BackgroundTasks,
-    x_app_id: str = Header(..., description="The internal application tracking identifier"),
-    x_target_provider: str = Header(..., description="Target engine: 'groq' or 'gemini'"),
-    x_bypass_cache: bool = Header(False, description="Set to true to skip semantic caching") 
+    x_app_id: str = Header(..., description="Internal app identifier"),
+    x_bypass_cache: str = Header("false", description="Skip caching") 
 ):
-    start_time = time.time() # ⏱️ Start the stopwatch
-    provider = x_target_provider.lower().strip()
+    start_time = time.time()
     
-    if provider not in PROVIDER_URLS:
-        raise HTTPException(status_code=400, detail="Unsupported provider.")
-
+    # FIX 1: Safely parse the string header into a boolean
+    bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
+    
     # 1. DLP Security Scan
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
     payload.messages = sanitized_messages
 
-    # 2. Semantic Cache Check (Surgical Bypass)
-    if not x_bypass_cache:
+    # 2. Intelligent Intent Classification
+    primary_target, routing_reason = classify_intent(payload.messages)
+
+    # 3. Cache Check
+    if not bypass_cache:
         cached_response = semantic_cache.query_cache(payload.messages, threshold=0.95)
         if cached_response:
             latency_ms = round((time.time() - start_time) * 1000, 2)
-            
-            # Fire off the database log in the background
-            background_tasks.add_task(log_transaction, x_app_id, provider, 0, 0, latency_ms, True)
-            
+            background_tasks.add_task(
+                log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False
+            )
             return ORJSONResponse(
                 content={
                     "id": "chatcmpl-cached",
@@ -51,53 +89,77 @@ async def proxy_chat_completion(
                     "choices": [{"index": 0, "message": {"role": "assistant", "content": cached_response}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                 },
-                status_code=200,
                 headers={
-                    "X-Proxy-Latency-Ms": str(latency_ms),
-                    "X-Proxy-Total-Tokens": "0",
-                    "X-Proxy-Cache-Hit": "True"
+                    "X-Proxy-Cache-Hit": "True",
+                    "X-Routed-To": "CACHE"
                 }
             )
 
-    # 3. LLM Network Forwarding (Cache Miss or Cache Bypassed)
-    target_url = PROVIDER_URLS[provider]
-    api_key = settings.GROQ_API_KEY if provider == "groq" else settings.GEMINI_API_KEY
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    # 4. Resilient Network Forwarding Loop
+    providers_to_try = FALLBACK_PRIORITY.get(primary_target, ["ollama", "groq", "gemini"])
+    fallback_used = False
+    actual_routing_reason = routing_reason
+    
+    for attempt_idx, current_provider in enumerate(providers_to_try):
+        target_url = PROVIDER_URLS[current_provider]
+        headers = get_provider_auth(current_provider)
+        current_timeout = PROVIDER_TIMEOUTS.get(current_provider, 30.0)
+        
+        # FIX 2: Reverted to correct model names
+        temp_payload = payload.model_dump()
+        if current_provider == "ollama":
+            temp_payload["model"] = settings.OLLAMA_MODEL
+        elif current_provider == "groq":
+            temp_payload["model"] = "llama-3.1-8b-instant" 
+        elif current_provider == "gemini":
+            temp_payload["model"] = "gemini-1.5-flash"
 
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            response = await client.post(target_url, json=payload.model_dump(), headers=headers)
-            response_json = response.json()
-            
-            prompt_tokens, completion_tokens = 0, 0
-            
-            if response.status_code == 200:
-                # Extract tokens from the provider's response
+        # FIX 6: Update telemetry reason if we are on a fallback
+        if fallback_used:
+            actual_routing_reason = f"Fallback trigger (Original intent: {primary_target})"
+
+        async with httpx.AsyncClient(timeout=current_timeout) as client:
+            try:
+                response = await client.post(target_url, json=temp_payload, headers=headers)
+                
+                if response.status_code != 200:
+                    if attempt_idx < len(providers_to_try) - 1:
+                        fallback_used = True
+                        continue 
+                    else:
+                        return ORJSONResponse(content=response.json(), status_code=response.status_code)
+
+                response_json = response.json()
                 usage = response_json.get("usage", {})
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
                 
-                # Only update the cache if we aren't bypassing it
-                if not x_bypass_cache:
-                    assistant_text = response_json["choices"][0]["message"]["content"]
-                    semantic_cache.update_cache(payload.messages, assistant_text)
+                # FIX 3: Safe dictionary access for the assistant text
+                choices = response_json.get("choices", [])
+                if choices:
+                    assistant_text = choices[0].get("message", {}).get("content", "")
+                    if assistant_text and not bypass_cache:
+                        semantic_cache.update_cache(payload.messages, assistant_text)
 
-            # Stop the stopwatch
-            latency_ms = round((time.time() - start_time) * 1000, 2)
-            
-            # Fire off the database log in the background
-            background_tasks.add_task(
-                log_transaction, x_app_id, provider, prompt_tokens, completion_tokens, latency_ms, False
-            )
+                latency_ms = round((time.time() - start_time) * 1000, 2)
+                
+                background_tasks.add_task(
+                    log_transaction_and_routing, 
+                    x_app_id, primary_target, current_provider, prompt_tokens, completion_tokens, latency_ms, False, actual_routing_reason, fallback_used
+                )
 
-            return ORJSONResponse(
-                content=response_json,
-                status_code=response.status_code,
-                headers={
-                    "X-Proxy-Latency-Ms": str(latency_ms),
-                    "X-Proxy-Total-Tokens": str(prompt_tokens + completion_tokens),
-                    "X-Proxy-Cache-Hit": "False"
-                }
-            )
-        except httpx.HTTPError as err:
-            raise HTTPException(status_code=502, detail=f"Outbound failure: {str(err)}")
+                return ORJSONResponse(
+                    content=response_json,
+                    status_code=response.status_code,
+                    headers={
+                        "X-Proxy-Latency-Ms": str(latency_ms),
+                        "X-Routed-To": current_provider.upper(),
+                        "X-Fallback-Triggered": str(fallback_used)
+                    }
+                )
+
+            except httpx.RequestError as exc:
+                if attempt_idx < len(providers_to_try) - 1:
+                    fallback_used = True
+                    continue
+                raise HTTPException(status_code=504, detail=f"Network failure on all fallbacks: {str(exc)}")

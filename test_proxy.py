@@ -2,41 +2,88 @@ import requests
 import time
 
 PROXY_URL = "http://localhost:8000/v1/chat/completions"
+
+# Notice we removed "X-Target-Provider". The proxy is smart now!
 HEADERS = {
-    "x-app-id": "test-script-v1",
-    "X-Target-Provider": "groq", # We will route to Groq for speed
+    "x-app-id": "test-script-v2",
     "Content-Type": "application/json"
 }
 
 def send_request(prompt_text, test_name):
-    print(f"\n--- Running Test: {test_name} ---")
+    print(f"\n{'='*50}")
+    print(f"🚀 RUNNING TEST: {test_name}")
+    print(f"{'='*50}")
+    
     payload = {
-        "model": "llama-3.1-8b-instant", # Dummy model name, Groq will handle it
+        "model": "default", # The proxy dynamically overrides this based on the target
         "messages": [{"role": "user", "content": prompt_text}]
     }
     
     start = time.time()
-    response = requests.post(PROXY_URL, json=payload, headers=HEADERS)
-    end = time.time()
-    
-    if response.status_code == 200:
-        data = response.json()
-        headers = response.headers
+    try:
+        response = requests.post(PROXY_URL, json=payload, headers=HEADERS)
+        end = time.time()
         
-        print(f"🤖 LLM Answer: {data['choices'][0]['message']['content'][:100]}...")
-        print(f"⏱️ Client-side Latency: {round((end - start) * 1000, 2)} ms")
-        print(f"📊 Proxy Latency Header: {headers.get('X-Proxy-Latency-Ms')} ms")
-        print(f"🪙 Proxy Token Header: {headers.get('X-Proxy-Total-Tokens')}")
-        print(f"⚡ Proxy Cache Hit Header: {headers.get('X-Proxy-Cache-Hit')}")
-    else:
-        print(f"❌ Request failed: {response.status_code}")
-        print(response.text)
+        if response.status_code == 200:
+            data = response.json()
+            headers = response.headers
+            
+            # Print a snippet of the response
+            answer = data['choices'][0]['message']['content'].strip().replace('\n', ' ')
+            print(f"🤖 LLM Answer: {answer[:100]}...")
+            
+            # Print our custom proxy headers
+            print(f"\n📊 --- Telemetry ---")
+            print(f"⏱️ Client Latency : {round((end - start) * 1000, 2)} ms")
+            print(f"⚡ Cache Hit      : {headers.get('X-Proxy-Cache-Hit', 'False')}")
+            print(f"🔀 Routed To      : {headers.get('X-Routed-To', 'UNKNOWN').upper()}")
+            print(f"🛡️ Fallback Used  : {headers.get('X-Fallback-Triggered', 'False')}")
+            
+        else:
+            print(f"❌ Request failed with status: {response.status_code}")
+            print(response.text)
+            
+    except requests.exceptions.ConnectionError:
+        print("❌ Connection Error: Is the FastAPI proxy running on port 8000?")
 
-# Test 1: The Initial Request (Should be a Cache Miss)
-send_request("Explain the theory of relativity in one sentence.", "1. First Request (Cache Miss)")
+# ---------------------------------------------------------
+# EDGE CASE 1: Standard/Simple Request -> Should hit Ollama
+# ---------------------------------------------------------
+send_request(
+    "Name the capital city of Japan. Answer in one word.", # Changed from France to Japan
+    "1. Low-Stakes Routing (Expect: OLLAMA)"
+)
 
-# Test 2: The Exact Duplicate (Should be a Cache Hit)
-send_request("Explain the theory of relativity in one sentence.", "2. Duplicate Request (Cache Hit)")
+# ---------------------------------------------------------
+# EDGE CASE 2: Code Generation -> Should hit Groq
+# ---------------------------------------------------------
+send_request(
+    "Write a javascript function to sort an array of numbers. Do not explain, just code.", # Changed to Javascript
+    "2. Code Intent Routing (Expect: GROQ)"
+)
 
-# Test 3: The PII Leak (Should be Redacted before hitting LLM)
-send_request("My name is John Doe and my phone number is 555-0198. Please repeat my phone number back to me.", "3. DLP Security Test")
+# ---------------------------------------------------------
+# EDGE CASE 3: Cache Hit Validation -> Should bypass network
+# ---------------------------------------------------------
+time.sleep(1) 
+send_request(
+    "Write a javascript function to sort an array of numbers. Do not explain, just code.", 
+    "3. Exact Duplicate (Expect: CACHE HIT)"
+)
+
+# ---------------------------------------------------------
+# EDGE CASE 4: Large Context Window -> Should hit Gemini
+# ---------------------------------------------------------
+massive_prompt = "Please summarize this text: " + ("A completely different random sentence about cats. " * 150)
+send_request(
+    massive_prompt, 
+    "4. Large Context Routing (Expect: GEMINI)"
+)
+
+# ---------------------------------------------------------
+# EDGE CASE 5: DLP Security / PII Leak
+# ---------------------------------------------------------
+send_request(
+    "My email address is secret.ceo@company.com. Please confirm you received this email.", 
+    "5. DLP Security Redaction"
+)
