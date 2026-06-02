@@ -1,6 +1,6 @@
 import asyncpg
 import asyncio
-from typing import Dict
+from typing import Dict, List
 
 DB_DSN = "postgresql://proxy_user:proxy_password@localhost:5433/proxy_db"
 
@@ -50,9 +50,18 @@ async def log_transaction_and_routing(
     latency_ms: float,
     is_cached: bool,
     routing_reason: str,
-    fallback_used: bool
+    fallback_used: bool,
+    # New Prompt Intelligence Args
+    original_prompt: str = "",
+    enhanced_prompt: str = "",
+    prompt_score: int = 0,
+    is_enhanced: bool = False,
+    detected_issues: List[str] = None
 ):
-    """Logs the transaction AND the routing decision in one go."""
+    """Logs the transaction, routing decision, and prompt intelligence in one go."""
+    if detected_issues is None:
+        detected_issues = []
+        
     try:
         conn = await asyncpg.connect(DB_DSN)
         
@@ -78,6 +87,17 @@ async def log_transaction_and_routing(
                 """,
                 tx_id, routed_to, routing_reason, fallback_used
             )
+            
+            # Record Prompt Intelligence Metrics
+            if original_prompt:
+                await conn.execute(
+                    """
+                    INSERT INTO prompt_quality_scores 
+                    (transaction_id, original_prompt, enhanced_prompt, score, is_enhanced, detected_issues)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                    """,
+                    tx_id, original_prompt, enhanced_prompt, prompt_score, is_enhanced, detected_issues
+                )
             
         await conn.close()
     except Exception as e:

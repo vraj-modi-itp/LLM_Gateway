@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.services.dlp import dlp_service
 from app.services.cache import semantic_cache
 from app.services.telemetry import log_transaction_and_routing
+from app.services.prompt_analyzer import prompt_analyzer  # NEW IMPORT
 
 router = APIRouter(prefix="/v1")
 
@@ -87,30 +88,20 @@ class SemanticClassifier:
         return dot_product / (norm_v1 * norm_v2)
 
     def initialize_centroids(self, embedding_model):
-        """Calculates the mathematical center of gravity for each route."""
-        print("Calculating Semantic Routing Centroids...")
         for provider, examples in ROUTE_EXAMPLES.items():
-            # Embed all 10 examples and calculate their mean (the centroid)
             embeddings = embedding_model.encode(examples)
             self.centroids[provider] = np.mean(embeddings, axis=0)
         self.is_initialized = True
 
     def classify(self, prompt: str, embedding_model) -> Tuple[str, str]:
-        # Hard physical constraint override
         if len(prompt.split()) > 800:
             return "gemini", "Length > 800 words; physical token limit override."
-
-        # Initialize centroids on the very first request if not done
         if not self.is_initialized:
             self.initialize_centroids(embedding_model)
 
-        # 1. Embed the incoming prompt
         prompt_vector = embedding_model.encode(prompt)
-
-        # 2. Find the closest centroid
-        best_provider = "ollama" # Default
+        best_provider = "ollama" 
         highest_score = -1.0
-        
         scores_debug = []
 
         for provider, centroid in self.centroids.items():
@@ -123,12 +114,7 @@ class SemanticClassifier:
         reason = f"Semantic Match ({best_provider}). Confidences: [{', '.join(scores_debug)}]"
         return best_provider, reason
 
-# Instantiate the global classifier
 intent_classifier = SemanticClassifier()
-
-# ==========================================
-# 🚦 FASTAPI ROUTER LOGIC
-# ==========================================
 
 def get_provider_auth(provider: str) -> dict:
     if provider == "groq":
@@ -148,23 +134,37 @@ async def proxy_chat_completion(
     start_time = time.time()
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
     
-    # 1. DLP Security Scan
+    # 1. DLP Security Scan (PII is scrubbed BEFORE prompt intelligence)
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
+    
+    # Extract the user prompt from the sanitized list
+    user_prompt_index = -1
+    original_user_prompt = ""
+    for i in range(len(sanitized_messages) - 1, -1, -1):
+        if sanitized_messages[i].role == "user":
+            user_prompt_index = i
+            original_user_prompt = sanitized_messages[i].content
+            break
+
+    # 2. 🧠 Prompt Intelligence Engine (NEW)
+    score, final_prompt, is_enhanced, issues = prompt_analyzer.analyze_and_enhance(original_user_prompt, x_app_id)
+    
+    # Inject enhanced prompt back into payload if modified
+    if is_enhanced and user_prompt_index != -1:
+        sanitized_messages[user_prompt_index].content = final_prompt
+        
     payload.messages = sanitized_messages
 
-    # 2. Intelligent Intent Classification (The New Semantic Router)
-    user_prompt = next((msg.content for msg in reversed(payload.messages) if msg.role == "user"), "")
-    
-    # We pass the embedding model from your cache service to avoid loading it twice!
-    primary_target, routing_reason = intent_classifier.classify(user_prompt, semantic_cache.embedding_model)
+    # 3. Intelligent Intent Classification
+    primary_target, routing_reason = intent_classifier.classify(final_prompt, semantic_cache.embedding_model)
 
-    # 3. Cache Check
+    # 4. Cache Check
     if not bypass_cache:
         cached_response = semantic_cache.query_cache(payload.messages, threshold=0.95)
         if cached_response:
             latency_ms = round((time.time() - start_time) * 1000, 2)
             background_tasks.add_task(
-                log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False
+                log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False, original_user_prompt, final_prompt, score, is_enhanced, issues
             )
             return ORJSONResponse(
                 content={
@@ -174,13 +174,10 @@ async def proxy_chat_completion(
                     "choices": [{"index": 0, "message": {"role": "assistant", "content": cached_response}, "finish_reason": "stop"}],
                     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                 },
-                headers={
-                    "X-Proxy-Cache-Hit": "True",
-                    "X-Routed-To": "CACHE"
-                }
+                headers={"X-Proxy-Cache-Hit": "True", "X-Routed-To": "CACHE"}
             )
 
-    # 4. Resilient Network Forwarding Loop
+    # 5. Resilient Network Forwarding Loop
     providers_to_try = FALLBACK_PRIORITY.get(primary_target, ["ollama", "groq", "gemini"])
     fallback_used = False
     actual_routing_reason = routing_reason
@@ -227,7 +224,8 @@ async def proxy_chat_completion(
                 
                 background_tasks.add_task(
                     log_transaction_and_routing, 
-                    x_app_id, primary_target, current_provider, prompt_tokens, completion_tokens, latency_ms, False, actual_routing_reason, fallback_used
+                    x_app_id, primary_target, current_provider, prompt_tokens, completion_tokens, latency_ms, False, actual_routing_reason, fallback_used,
+                    original_user_prompt, final_prompt, score, is_enhanced, issues
                 )
 
                 return ORJSONResponse(
