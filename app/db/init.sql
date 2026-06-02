@@ -28,12 +28,24 @@ CREATE TABLE IF NOT EXISTS prompt_clusters (
     last_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table 4: NEW - Tracks the intelligent routing logic and failovers
+-- Table 4: Tracks the intelligent routing logic and failovers
 CREATE TABLE IF NOT EXISTS routing_decisions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     transaction_id UUID REFERENCES llm_transactions(id) ON DELETE CASCADE,
     selected_provider VARCHAR(50),
     reason TEXT,
     fallback_used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table 5: NEW - Prompt Intelligence and Quality Metrics
+CREATE TABLE IF NOT EXISTS prompt_quality_scores (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaction_id UUID REFERENCES llm_transactions(id) ON DELETE CASCADE,
+    original_prompt TEXT NOT NULL,
+    enhanced_prompt TEXT,
+    score INT NOT NULL,
+    is_enhanced BOOLEAN DEFAULT FALSE,
+    detected_issues TEXT[],
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

@@ -136,3 +136,26 @@ send_request(
     massive_text, 
     "11. Hard Limit Override Routing (Expect: Forced to GEMINI due to >800 word count)"
 )
+
+# ==============================================================================
+# PHASE 5: PROMPT INTELLIGENCE & AUTO-ENHANCEMENT
+# ==============================================================================
+
+send_request(
+    "build me something cool i need it fast just do it for me", 
+    "12. The Rambling Wall (Expect: Low Score, Auto-Enhanced with Context)",
+    extra_headers={"x-app-id": "qa-stress-test-v3", "x-bypass-cache": "true"}
+)
+
+send_request(
+    "Write SQL query joining users and orders.", 
+    "13. Short But Perfect (Expect: Max Score, No Enhancement needed)",
+    extra_headers={"x-bypass-cache": "true"}
+)
+
+# Demonstrating PII Masking + Enhancement Pipeline Safety
+send_request(
+    "email the report to ceo@intuitive.ai and make sure it looks good", 
+    "14. DLP + Enhancement Safety (Expect: Email redacted BEFORE enhancement injection)",
+    extra_headers={"x-app-id": "sales_assistant", "x-bypass-cache": "true"}
+)
