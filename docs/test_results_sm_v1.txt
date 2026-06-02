@@ -1,0 +1,124 @@
+(.venv) PS C:\Users\SumitMishra(CloudPla\Codespace\LLM_Gateway> python test_proxy.py
+
+============================================================
+🚀 RUNNING TEST: 1. Low-Stakes Routing (Expect: OLLAMA)
+============================================================
+🤖 LLM Answer: The capital city of Australia is Canberra.  Canberra is the capital city of Australia and is located in the Australian Capital Territory.
+
+📊 --- Telemetry ---
+⏱️ Latency        : 16185.72 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 2. Explicit Code Intent (Expect: GROQ)
+============================================================
+🤖 LLM Answer: ```sql SELECT users.username, orders.order_id, orders.order_total FROM users INNER JOIN orders ON users.user_id = orders.user_id WHERE orders.order_total > 100; ```
+
+📊 --- Telemetry ---
+⏱️ Latency        : 10626.21 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 3. Nuanced Code Intent (Expect: GROQ - Semantic router should catch this via centroid)
+============================================================
+🤖 LLM Answer: **History of Object-Oriented Programming (OOP)**  Object-Oriented Programming (OOP) is a programming paradigm that revolves around the concept of "objects" and their interactions. OOP emerged as a response to the limitations of traditional procedural programming.  **Early Influences**  The roots of OOP can be traced back to the 1960s and 1970s, when computer scientists such as Alan Kay, David Harel, Peter Naur, and Ole-Johan Dahl began exploring the concept of objects and modularity. These pioneers drew inspiration from various fields, including:  1. **Simula**: Developed in the 1960s by Ole-Johan Dahl and Kristen Nygaard, Simula is considered the first object-oriented language. It introduced concepts such as classes, inheritance, and polymorphism. 2. **Algebra of Communicating Processes (ACP)**: Developed by Robin Milner in the 1980s, ACP provided a mathematical framework for describing and analyzing concurrent systems. 3. **Artificial Intelligence (AI)**: Researchers like Marvin Minsky and Seymour Papert explored the idea of treating computer programs as objects, with properties and behavior, in the 1960s.  **Key Principles**  As OOP evolved, five core principles emerged:  1. **Encapsulation**: Bundling data and its associated methods to hide implementation details and enhance modularity. 2. **Abstraction**: Focusing on essential features and behaviors of an object, while ignoring non-essential details. 3. **Inheritance**: Creating a new class based on an existing one, inheriting its properties and behavior. 4. **Polymorphism**: Treating objects of different classes as if they were of the same class, allowing for more flexibility and generality. 5. **Composition**: Combining objects to create more complex ones, promoting reuse and modularity.  **Evolution and Adoption**  OOP gained momentum in the 1980s with the introduction of languages like:  1. **Smalltalk**: Developed by Alan Kay and his team at Xerox PARC in the 1970s, Smalltalk is considered one of the first true object-oriented languages. 2. **C++**: Created by Bjarne Stroustrup in the 1980s, C++ combined OOP concepts with the efficiency and features of C. 3. **Java**: Developed by Sun Microsystems (now Oracle) in the 1990s, Java popularized OOP for large-scale programming and enterprise development.  Today, OOP is a fundamental concept in programming, influencing various languages, frameworks, and software engineering practices.  **Legacy and Impact**  OOP has transformed the way we design, implement, and interact with software systems, enabling:  1. **Program modularity**: Breaking down complex systems into smaller, reusable components. 2. **Easier maintenance**: Reducing code complexity and making it easier to understand and modify. 3. **Improved scalability**: Allowing for more efficient use of resources and better handling of complex problems.  The impact of OOP extends beyond programming, influencing fields like computer science, artificial intelligence, data science, and software engineering.  **Conclusion**  The history of Object-Oriented Programming is a rich and fascinating story of innovation, collaboration, and problem-solving. From its humble beginnings to its widespread adoption, OOP continues to shape the way we design, develop, and maintain software systems, empowering us to build more efficient, modular, and scalable solutions.
+
+📊 --- Telemetry ---
+⏱️ Latency        : 4123.6 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : True
+
+============================================================
+🚀 RUNNING TEST: 4. Exact Cache Match (Expect: CACHE HIT)
+============================================================
+🤖 LLM Answer: ```sql SELECT users.username, orders.order_id, orders.order_total FROM users INNER JOIN orders ON users.user_id = orders.user_id WHERE orders.order_total > 100; ```
+
+📊 --- Telemetry ---
+⏱️ Latency        : 2159.62 ms
+⚡ Cache Hit      : True
+🔀 Routed To      : CACHE
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 5. Semantic Cache Match (Expect: CACHE HIT - Different words, same meaning!)
+============================================================
+🤖 LLM Answer: ### SQL Query: Join Orders and Users Tables ```sql -- Select columns from both tables SELECT    u.id AS user_id,   u.name AS user_name,   o.order_id,   o.total AS order_total -- Join the orders and users tables FROM orders o -- Use an INNER JOIN to link orders with the user who made the order INNER JOIN users u -- Join on the user ID ON o.user_id = u.id -- Filter orders where the total is greater than 100 WHERE o.total > 100; ```  ### Explanation  This SQL query will return the ID, name of the user, order ID, and the total cost of the order for all orders where the total is greater than $100.   Here's how it works:  1. **SELECT**: The columns we want to return. 2. **FROM**: The orders table (`o`) from which we want to retrieve data. 3. **INNER JOIN**: We want to combine orders with the user who made the order. We select both tables (`u` for users, `o` for orders) and join them on the user ID. 4. **ON**: We specify the condition for joining the two tables (the user ID). 5. **WHERE**: We limit the results to orders with a total greater than $100.  ### Example Use Case  Suppose we have the following data in our orders and users tables:  - **orders** table:   | order_id | total | user_id |   | --- | --- | --- |   1 | 200 | 1  |   2 | 90 | 2  |   3 | 150 | 1 |  - **users** table:   | id | name |   | --- | --- |   1 | John Doe |   2 | Jane Doe |  Running the above query will return the following result: | user_id | user_name | order_id | order_total | | --- | --- | --- | --- | | 1 | John Doe | 1 | 200 | | 1 | John Doe | 3 | 150 |
+
+📊 --- Telemetry ---
+⏱️ Latency        : 3162.39 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 6. Cache Bypass Header (Expect: GROQ - Forced Network Call)
+============================================================
+📝 Injecting Custom Headers: {'x-bypass-cache': 'true'}
+🤖 LLM Answer: ```sql SELECT users.id, orders.id, orders.order_total FROM users INNER JOIN orders ON users.id = orders.user_id WHERE orders.order_total > 100; ```
+
+📊 --- Telemetry ---
+⏱️ Latency        : 7391.19 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 7. Multi-Entity PII Attack (Expect: Redaction of all 3 entities)
+============================================================
+🤖 LLM Answer: I can't provide information that could be used to access your bank or financial accounts or steal your identity. Is there anything else I can help you with?
+
+📊 --- Telemetry ---
+⏱️ Latency        : 2626.83 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 8. DLP + Cache Intersection (Expect: CACHE HIT on redacted template!)
+============================================================
+🤖 LLM Answer: I can't provide information that could be used to access your bank or financial accounts or steal your identity. Is there anything else I can help you with?
+
+📊 --- Telemetry ---
+⏱️ Latency        : 2122.55 ms
+⚡ Cache Hit      : True
+🔀 Routed To      : CACHE
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 9. Empty / Whitespace Prompt (Expect: Graceful handling by default route)
+============================================================
+🤖 LLM Answer: Understood. I'm ready to assist you. Is there anything I can help you with today?
+
+📊 --- Telemetry ---
+⏱️ Latency        : 4498.32 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 10. High-Volume Standard Routing (Expect: Semantic router decides - likely OLLAMA/GEMINI)
+============================================================
+🤖 LLM Answer: It appears that you have repeated the word "apple" multiple times.   If you would like, I can provide some information about the apple fruit or the technology company named Apple. Or perhaps you'd like to ask a question that I can help with.
+
+📊 --- Telemetry ---
+⏱️ Latency        : 3394.41 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : False
+
+============================================================
+🚀 RUNNING TEST: 11. Hard Limit Override Routing (Expect: Forced to GEMINI due to >800 word count)
+============================================================
+🤖 LLM Answer: It appears that you have repeated the word "apple" multiple times.   If you would like, I can provide some information about the apple fruit or the technology company named Apple. Or perhaps you'd like to ask a question that I can help with.
+
+📊 --- Telemetry ---
+⏱️ Latency        : 2317.68 ms
+⚡ Cache Hit      : True
+🔀 Routed To      : CACHE
+🛡️ Fallback Used  : False
+(.venv) PS C:\Users\SumitMishra(CloudPla\Codespace\LLM_Gateway> 

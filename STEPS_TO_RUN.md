@@ -26,3 +26,5 @@ streamlit run dashboard.py --server.port 8501
 streamlit run dashboard.py --server.port 8501
 
 Note: i have postgres locally installed so it interferes with port numbers so i have changes it to 5433 
+
+Note: run this model in ollama : ollama run gemma:2b
