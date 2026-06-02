@@ -1,7 +1,7 @@
 # Environments
 venv/
 .env
-
+.venv
 # Cache & Local Data
 __pycache__/
 data/

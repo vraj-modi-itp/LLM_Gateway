@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: proxy_password
       POSTGRES_DB: proxy_db
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       # This maps our init script to automatically create tables on first run

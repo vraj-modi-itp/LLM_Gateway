@@ -1,7 +1,7 @@
 import asyncpg
 
 # Hardcoded DB connection matching our docker-compose.yml setup
-DB_DSN = "postgresql://proxy_user:proxy_password@localhost:5432/proxy_db"
+DB_DSN = "postgresql://proxy_user:proxy_password@localhost:5433/proxy_db"
 
 async def log_transaction(
     app_id: str,
