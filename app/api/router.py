@@ -1,6 +1,7 @@
 import time
 import re
-from typing import List, Tuple
+import numpy as np
+from typing import List, Tuple, Dict
 from fastapi import APIRouter, Header, HTTPException, status, BackgroundTasks
 from fastapi.responses import ORJSONResponse
 import httpx
@@ -25,26 +26,109 @@ FALLBACK_PRIORITY = {
     "ollama": ["ollama", "groq", "gemini"]
 }
 
-# FIX 4: Per-provider timeouts (seconds)
 PROVIDER_TIMEOUTS = {
-    "groq": 15.0,     # Should be lightning fast, fail quickly if not
-    "gemini": 45.0,   # Allowed more time for massive contexts
-    "ollama": 180.0   # Local CPU execution needs maximum headroom
+    "groq": 15.0,
+    "gemini": 45.0,
+    "ollama": 180.0
 }
 
-def classify_intent(messages: List[ChatMessage]) -> Tuple[str, str]:
-    """Analyzes prompt to determine the optimal provider."""
-    user_prompt = next((msg.content for msg in reversed(messages) if msg.role == "user"), "").lower()
-    
-    # FIX 5: Use regex word boundaries to prevent false positives (e.g., "I function well")
-    code_keywords = [r"\bdef\b", r"\bclass\b", r"\bfunction\b", r"\bbug\b", r"\bcompile\b", r"\bsql\b", r"\breact\b", r"\bjava\b"]
-    if any(re.search(kw, user_prompt) for kw in code_keywords):
-        return "groq", "Code/logic detected; routed for speed."
+# ==========================================
+# 🧠 THE SEMANTIC ROUTER ENGINE
+# ==========================================
 
-    if len(user_prompt.split()) > 800:
-        return "gemini", "Large context detected; routed for token window."
+ROUTE_EXAMPLES = {
+    "groq": [
+        "Write a python function to reverse a string.",
+        "How do I fix a NullPointerException in Java?",
+        "Create a React component for a dropdown menu.",
+        "Debug this SQL query, it's running too slow.",
+        "What is the difference between an interface and abstract class?",
+        "Write a bash script to parse these logs.",
+        "How to center a div using CSS flexbox?",
+        "Convert this JSON object into a TypeScript interface.",
+        "Explain how garbage collection works in Go.",
+        "Write a regex to match an email address."
+    ],
+    "gemini": [
+        "Summarize this 20-page document on monetary policy.",
+        "Analyze the themes of isolation in Mary Shelley's Frankenstein.",
+        "Compare and contrast the economic impacts of the Industrial Revolution.",
+        "Write a comprehensive essay on the history of the Roman Empire.",
+        "Extract all the key arguments from this legal transcript.",
+        "Review this entire codebase and write documentation for it.",
+        "Draft a 5-page research proposal on quantum computing.",
+        "Synthesize these five articles into a literature review.",
+        "Evaluate the strategic business plan for market expansion.",
+        "Generate a detailed chapter-by-chapter outline for a fantasy novel."
+    ],
+    "ollama": [
+        "What is the capital of France?",
+        "Who wrote the play Hamlet?",
+        "Tell me a joke about a programmer.",
+        "What are the ingredients for a chocolate cake?",
+        "Write a short polite email declining a meeting.",
+        "How far is the moon from the Earth?",
+        "Translate 'hello' into Spanish.",
+        "Give me a 3-day itinerary for a trip to Rome.",
+        "What is the meaning of life?",
+        "Recommend a good sci-fi movie."
+    ]
+}
 
-    return "ollama", "Standard request; routed to local Ollama for zero cost."
+class SemanticClassifier:
+    def __init__(self):
+        self.centroids: Dict[str, np.ndarray] = {}
+        self.is_initialized = False
+
+    def _cosine_similarity(self, v1: np.ndarray, v2: np.ndarray) -> float:
+        dot_product = np.dot(v1, v2)
+        norm_v1 = np.linalg.norm(v1)
+        norm_v2 = np.linalg.norm(v2)
+        return dot_product / (norm_v1 * norm_v2)
+
+    def initialize_centroids(self, embedding_model):
+        """Calculates the mathematical center of gravity for each route."""
+        print("Calculating Semantic Routing Centroids...")
+        for provider, examples in ROUTE_EXAMPLES.items():
+            # Embed all 10 examples and calculate their mean (the centroid)
+            embeddings = embedding_model.encode(examples)
+            self.centroids[provider] = np.mean(embeddings, axis=0)
+        self.is_initialized = True
+
+    def classify(self, prompt: str, embedding_model) -> Tuple[str, str]:
+        # Hard physical constraint override
+        if len(prompt.split()) > 800:
+            return "gemini", "Length > 800 words; physical token limit override."
+
+        # Initialize centroids on the very first request if not done
+        if not self.is_initialized:
+            self.initialize_centroids(embedding_model)
+
+        # 1. Embed the incoming prompt
+        prompt_vector = embedding_model.encode(prompt)
+
+        # 2. Find the closest centroid
+        best_provider = "ollama" # Default
+        highest_score = -1.0
+        
+        scores_debug = []
+
+        for provider, centroid in self.centroids.items():
+            score = self._cosine_similarity(prompt_vector, centroid)
+            scores_debug.append(f"{provider}: {score:.2f}")
+            if score > highest_score:
+                highest_score = score
+                best_provider = provider
+
+        reason = f"Semantic Match ({best_provider}). Confidences: [{', '.join(scores_debug)}]"
+        return best_provider, reason
+
+# Instantiate the global classifier
+intent_classifier = SemanticClassifier()
+
+# ==========================================
+# 🚦 FASTAPI ROUTER LOGIC
+# ==========================================
 
 def get_provider_auth(provider: str) -> dict:
     if provider == "groq":
@@ -62,16 +146,17 @@ async def proxy_chat_completion(
     x_bypass_cache: str = Header("false", description="Skip caching") 
 ):
     start_time = time.time()
-    
-    # FIX 1: Safely parse the string header into a boolean
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
     
     # 1. DLP Security Scan
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
     payload.messages = sanitized_messages
 
-    # 2. Intelligent Intent Classification
-    primary_target, routing_reason = classify_intent(payload.messages)
+    # 2. Intelligent Intent Classification (The New Semantic Router)
+    user_prompt = next((msg.content for msg in reversed(payload.messages) if msg.role == "user"), "")
+    
+    # We pass the embedding model from your cache service to avoid loading it twice!
+    primary_target, routing_reason = intent_classifier.classify(user_prompt, semantic_cache.embedding_model)
 
     # 3. Cache Check
     if not bypass_cache:
@@ -105,7 +190,6 @@ async def proxy_chat_completion(
         headers = get_provider_auth(current_provider)
         current_timeout = PROVIDER_TIMEOUTS.get(current_provider, 30.0)
         
-        # FIX 2: Reverted to correct model names
         temp_payload = payload.model_dump()
         if current_provider == "ollama":
             temp_payload["model"] = settings.OLLAMA_MODEL
@@ -114,9 +198,8 @@ async def proxy_chat_completion(
         elif current_provider == "gemini":
             temp_payload["model"] = "gemini-1.5-flash"
 
-        # FIX 6: Update telemetry reason if we are on a fallback
         if fallback_used:
-            actual_routing_reason = f"Fallback trigger (Original intent: {primary_target})"
+            actual_routing_reason = f"Fallback trigger (Original target: {primary_target})"
 
         async with httpx.AsyncClient(timeout=current_timeout) as client:
             try:
@@ -134,7 +217,6 @@ async def proxy_chat_completion(
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
                 
-                # FIX 3: Safe dictionary access for the assistant text
                 choices = response_json.get("choices", [])
                 if choices:
                     assistant_text = choices[0].get("message", {}).get("content", "")

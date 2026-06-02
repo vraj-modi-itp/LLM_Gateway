@@ -1,43 +1,52 @@
 import requests
 import time
+import copy
 
 PROXY_URL = "http://localhost:8000/v1/chat/completions"
 
-# Notice we removed "X-Target-Provider". The proxy is smart now!
-HEADERS = {
-    "x-app-id": "test-script-v2",
+BASE_HEADERS = {
+    "x-app-id": "qa-stress-test-v3",
     "Content-Type": "application/json"
 }
 
-def send_request(prompt_text, test_name):
-    print(f"\n{'='*50}")
+def send_request(prompt_text, test_name, extra_headers=None):
+    print(f"\n{'='*60}")
     print(f"🚀 RUNNING TEST: {test_name}")
-    print(f"{'='*50}")
+    print(f"{'='*60}")
+    
+    headers = copy.deepcopy(BASE_HEADERS)
+    if extra_headers:
+        headers.update(extra_headers)
+        print(f"📝 Injecting Custom Headers: {extra_headers}")
     
     payload = {
-        "model": "default", # The proxy dynamically overrides this based on the target
+        "model": "default", 
         "messages": [{"role": "user", "content": prompt_text}]
     }
     
     start = time.time()
     try:
-        response = requests.post(PROXY_URL, json=payload, headers=HEADERS)
+        response = requests.post(PROXY_URL, json=payload, headers=headers)
         end = time.time()
         
         if response.status_code == 200:
             data = response.json()
-            headers = response.headers
+            resp_headers = response.headers
             
-            # Print a snippet of the response
-            answer = data['choices'][0]['message']['content'].strip().replace('\n', ' ')
-            print(f"🤖 LLM Answer: {answer[:100]}...")
+            # Print a snippet of the response safely
+            choices = data.get('choices', [])
+            if choices:
+                answer = choices[0].get('message', {}).get('content', '').strip().replace('\n', ' ')
+                print(f"🤖 LLM Answer: {answer}")
+            else:
+                print("🤖 LLM Answer: [Empty/Malformed]")
             
-            # Print our custom proxy headers
+            # Print telemetry
             print(f"\n📊 --- Telemetry ---")
-            print(f"⏱️ Client Latency : {round((end - start) * 1000, 2)} ms")
-            print(f"⚡ Cache Hit      : {headers.get('X-Proxy-Cache-Hit', 'False')}")
-            print(f"🔀 Routed To      : {headers.get('X-Routed-To', 'UNKNOWN').upper()}")
-            print(f"🛡️ Fallback Used  : {headers.get('X-Fallback-Triggered', 'False')}")
+            print(f"⏱️ Latency        : {round((end - start) * 1000, 2)} ms")
+            print(f"⚡ Cache Hit      : {resp_headers.get('X-Proxy-Cache-Hit', 'False')}")
+            print(f"🔀 Routed To      : {resp_headers.get('X-Routed-To', 'UNKNOWN').upper()}")
+            print(f"🛡️ Fallback Used  : {resp_headers.get('X-Fallback-Triggered', 'False')}")
             
         else:
             print(f"❌ Request failed with status: {response.status_code}")
@@ -46,44 +55,84 @@ def send_request(prompt_text, test_name):
     except requests.exceptions.ConnectionError:
         print("❌ Connection Error: Is the FastAPI proxy running on port 8000?")
 
-# ---------------------------------------------------------
-# EDGE CASE 1: Standard/Simple Request -> Should hit Ollama
-# ---------------------------------------------------------
+# ==============================================================================
+# PHASE 1: SEMANTIC ROUTING BOUNDARIES
+# ==============================================================================
+
 send_request(
-    "Name the capital city of Japan. Answer in one word.", # Changed from France to Japan
+    "Name the capital city of Australia. Answer in one word.", 
     "1. Low-Stakes Routing (Expect: OLLAMA)"
 )
 
-# ---------------------------------------------------------
-# EDGE CASE 2: Code Generation -> Should hit Groq
-# ---------------------------------------------------------
 send_request(
-    "Write a javascript function to sort an array of numbers. Do not explain, just code.", # Changed to Javascript
-    "2. Code Intent Routing (Expect: GROQ)"
+    "Write a SQL query to join the users and orders tables where order_total > 100.", 
+    "2. Explicit Code Intent (Expect: GROQ)"
 )
 
-# ---------------------------------------------------------
-# EDGE CASE 3: Cache Hit Validation -> Should bypass network
-# ---------------------------------------------------------
-time.sleep(1) 
 send_request(
-    "Write a javascript function to sort an array of numbers. Do not explain, just code.", 
-    "3. Exact Duplicate (Expect: CACHE HIT)"
+    "Can you explain the history of object-oriented programming? I don't need code, just the philosophy.",
+    "3. Nuanced Code Intent (Expect: GROQ - Semantic router should catch this via centroid)"
 )
 
-# ---------------------------------------------------------
-# EDGE CASE 4: Large Context Window -> Should hit Gemini
-# ---------------------------------------------------------
-massive_prompt = "Please summarize this text: " + ("A completely different random sentence about cats. " * 150)
+# ==============================================================================
+# PHASE 2: ADVANCED CACHE MANIPULATION
+# ==============================================================================
+time.sleep(1) # Let Qdrant index Test 2
+
 send_request(
-    massive_prompt, 
-    "4. Large Context Routing (Expect: GEMINI)"
+    "Write a SQL query to join the users and orders tables where order_total > 100.", 
+    "4. Exact Cache Match (Expect: CACHE HIT)"
 )
 
-# ---------------------------------------------------------
-# EDGE CASE 5: DLP Security / PII Leak
-# ---------------------------------------------------------
 send_request(
-    "My email address is secret.ceo@company.com. Please confirm you received this email.", 
-    "5. DLP Security Redaction"
+    "Create a SQL query that joins the orders and users tables where the total is greater than 100.", 
+    "5. Semantic Cache Match (Expect: CACHE HIT - Different words, same meaning!)"
+)
+
+send_request(
+    "Write a SQL query to join the users and orders tables where order_total > 100.", 
+    "6. Cache Bypass Header (Expect: GROQ - Forced Network Call)",
+    extra_headers={"x-bypass-cache": "true"}
+)
+
+# ==============================================================================
+# PHASE 3: DLP & SECURITY INTERSECTIONS
+# ==============================================================================
+
+send_request(
+    "Please update my file. My SSN is 111-22-3333, my phone is 555-0199, and my card is 4111-1111-1111-1111.", 
+    "7. Multi-Entity PII Attack (Expect: Redaction of all 3 entities)"
+)
+
+time.sleep(1)
+
+# Here we send a completely DIFFERENT SSN, Phone, and Card. 
+# BUT because Presidio redacts them into <US_SSN>, <PHONE_NUMBER>, etc. BEFORE hitting the cache,
+# the cache should actually see this as an EXACT MATCH to Test 7!
+send_request(
+    "Please update my file. My SSN is 999-88-7777, my phone is 555-0987, and my card is 5555-4444-3333-2222.", 
+    "8. DLP + Cache Intersection (Expect: CACHE HIT on redacted template!)"
+)
+
+# ==============================================================================
+# PHASE 4: PAYLOAD & LIMIT STRESS TESTS
+# ==============================================================================
+
+send_request(
+    "   \n  \t  ", 
+    "9. Empty / Whitespace Prompt (Expect: Graceful handling by default route)"
+)
+
+# Generate a prompt that is EXACTLY 750 words (under the 800 limit)
+long_text = "apple " * 750
+send_request(
+    long_text, 
+    "10. High-Volume Standard Routing (Expect: Semantic router decides - likely OLLAMA/GEMINI)"
+)
+
+# Generate a prompt that is EXACTLY 810 words (over the 800 limit)
+massive_text = "apple " * 810
+send_request(
+    massive_text, 
+    "11. Hard Limit Override Routing (Expect: Forced to GEMINI due to >800 word count)"
 )
