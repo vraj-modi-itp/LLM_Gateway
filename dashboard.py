@@ -7,7 +7,7 @@ st.set_page_config(page_title="LLM Proxy Dashboard", layout="wide")
 # Connect to the local PostgreSQL Docker container
 @st.cache_resource
 def get_db_connection():
-    return psycopg2.connect("postgresql://proxy_user:proxy_password@localhost:5432/proxy_db")
+    return psycopg2.connect("postgresql://proxy_user:proxy_password@localhost:5433/proxy_db")
 
 conn = get_db_connection()
 

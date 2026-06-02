@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS llm_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     app_id VARCHAR(100) NOT NULL,
     target_provider VARCHAR(50) NOT NULL,
+    routed_to VARCHAR(50), 
     prompt_tokens INT DEFAULT 0,
     completion_tokens INT DEFAULT 0,
     latency_ms FLOAT,
@@ -15,8 +16,8 @@ CREATE TABLE IF NOT EXISTS llm_transactions (
 CREATE TABLE IF NOT EXISTS dlp_incidents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     transaction_id UUID REFERENCES llm_transactions(id) ON DELETE CASCADE,
-    entity_types TEXT[], -- e.g., ['EMAIL_ADDRESS', 'CREDIT_CARD']
-    action_taken VARCHAR(50), -- e.g., 'REDACTED', 'BLOCKED'
+    entity_types TEXT[],
+    action_taken VARCHAR(50),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -25,4 +26,14 @@ CREATE TABLE IF NOT EXISTS prompt_clusters (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     member_count INT DEFAULT 1,
     last_seen TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Table 4: NEW - Tracks the intelligent routing logic and failovers
+CREATE TABLE IF NOT EXISTS routing_decisions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    transaction_id UUID REFERENCES llm_transactions(id) ON DELETE CASCADE,
+    selected_provider VARCHAR(50),
+    reason TEXT,
+    fallback_used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

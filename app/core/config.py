@@ -6,12 +6,15 @@ class Settings(BaseSettings):
     PORT: int = 8000
     GEMINI_API_KEY: str
     GROQ_API_KEY: str
+    
+    # Ollama variables pointing to local instance and Gemma
+    OLLAMA_BASE_URL: str = "http://localhost:11434/v1/chat/completions"
+    OLLAMA_MODEL: str = "gemma:2b"
 
-    # Tell Pydantic to read from the local .env file and ignore other system env vars
     model_config = SettingsConfigDict(
         env_file=".env", 
         env_file_encoding="utf-8",
-        extra="ignore" # This safely bypasses any other stray system environment variables
+        extra="ignore"
     )
 
 settings = Settings()
