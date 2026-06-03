@@ -3,8 +3,18 @@ from fastapi.responses import ORJSONResponse
 from contextlib import asynccontextmanager
 import asyncio
 import time
+import logging
+import warnings
 from opentelemetry import trace
 from openinference.semconv.trace import SpanAttributes, OpenInferenceSpanKindValues
+
+# ---------------------------------------------------------
+# NEW: SUPPRESS NOISY THIRD-PARTY WARNINGS & LOGS
+# ---------------------------------------------------------
+logging.getLogger("presidio-analyzer").setLevel(logging.ERROR)
+logging.getLogger("opentelemetry.trace").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", message=".*Microsoft Visual C++ Redistributable.*")
+warnings.filterwarnings("ignore", message=".*infer collector endpoint protocol.*")
 
 # ---------------------------------------------------------
 # 1. INITIALIZE OBSERVABILITY FIRST (CRITICAL IMPORT ORDER)
@@ -34,7 +44,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(refresh_provider_metrics())
     asyncio.create_task(budget_service.sync_budgets_loop())
     
-    gateway_log.info("Infrastructure engines fully initialized!")
+    gateway_log.info("Infrastructure engines fully initialized! Ready for traffic.")
     yield
     gateway_log.info("Shutting down worker proxy application...")
 
