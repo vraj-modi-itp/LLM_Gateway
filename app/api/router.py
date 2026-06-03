@@ -1,5 +1,4 @@
 import time
-import re
 import numpy as np
 from typing import List, Tuple, Dict
 from fastapi import APIRouter, Header, HTTPException, status, BackgroundTasks
@@ -11,7 +10,7 @@ from app.core.config import settings
 from app.services.dlp import dlp_service
 from app.services.cache import semantic_cache
 from app.services.telemetry import log_transaction_and_routing
-from app.services.prompt_analyzer import prompt_analyzer  # NEW IMPORT
+from app.services.prompt_analyzer import prompt_analyzer
 
 router = APIRouter(prefix="/v1")
 
@@ -33,46 +32,27 @@ PROVIDER_TIMEOUTS = {
     "ollama": 180.0
 }
 
-# ==========================================
-# 🧠 THE SEMANTIC ROUTER ENGINE
-# ==========================================
-
 ROUTE_EXAMPLES = {
     "groq": [
         "Write a python function to reverse a string.",
         "How do I fix a NullPointerException in Java?",
         "Create a React component for a dropdown menu.",
         "Debug this SQL query, it's running too slow.",
-        "What is the difference between an interface and abstract class?",
-        "Write a bash script to parse these logs.",
-        "How to center a div using CSS flexbox?",
-        "Convert this JSON object into a TypeScript interface.",
-        "Explain how garbage collection works in Go.",
-        "Write a regex to match an email address."
+        "What is the difference between an interface and abstract class?"
     ],
     "gemini": [
         "Summarize this 20-page document on monetary policy.",
         "Analyze the themes of isolation in Mary Shelley's Frankenstein.",
         "Compare and contrast the economic impacts of the Industrial Revolution.",
         "Write a comprehensive essay on the history of the Roman Empire.",
-        "Extract all the key arguments from this legal transcript.",
-        "Review this entire codebase and write documentation for it.",
-        "Draft a 5-page research proposal on quantum computing.",
-        "Synthesize these five articles into a literature review.",
-        "Evaluate the strategic business plan for market expansion.",
-        "Generate a detailed chapter-by-chapter outline for a fantasy novel."
+        "Extract all the key arguments from this legal transcript."
     ],
     "ollama": [
         "What is the capital of France?",
         "Who wrote the play Hamlet?",
         "Tell me a joke about a programmer.",
         "What are the ingredients for a chocolate cake?",
-        "Write a short polite email declining a meeting.",
-        "How far is the moon from the Earth?",
-        "Translate 'hello' into Spanish.",
-        "Give me a 3-day itinerary for a trip to Rome.",
-        "What is the meaning of life?",
-        "Recommend a good sci-fi movie."
+        "Write a short polite email declining a meeting."
     ]
 }
 
@@ -134,37 +114,38 @@ async def proxy_chat_completion(
     start_time = time.time()
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
     
-    # 1. DLP Security Scan (PII is scrubbed BEFORE prompt intelligence)
+    # 1. DLP SECURITY SCAN (HAPPENS FIRST)
+    # This guarantees that all emails, SSNs, and phone numbers are converted to <EMAIL> tags
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
     
-    # Extract the user prompt from the sanitized list
     user_prompt_index = -1
-    original_user_prompt = ""
+    scrubbed_prompt = ""
+    
     for i in range(len(sanitized_messages) - 1, -1, -1):
         if sanitized_messages[i].role == "user":
             user_prompt_index = i
-            original_user_prompt = sanitized_messages[i].content
+            # The prompt is now fully sanitized BEFORE hitting the intelligence engine
+            scrubbed_prompt = sanitized_messages[i].content
             break
 
-    # 2. 🧠 Prompt Intelligence Engine (NEW)
-    score, final_prompt, is_enhanced, issues = prompt_analyzer.analyze_and_enhance(original_user_prompt, x_app_id)
+    # 2. PROMPT INTELLIGENCE ENGINE (Uses the fully scrubbed prompt)
+    score, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
     
-    # Inject enhanced prompt back into payload if modified
     if is_enhanced and user_prompt_index != -1:
         sanitized_messages[user_prompt_index].content = final_prompt
         
     payload.messages = sanitized_messages
 
-    # 3. Intelligent Intent Classification
+    # 3. INTELLIGENT INTENT CLASSIFICATION
     primary_target, routing_reason = intent_classifier.classify(final_prompt, semantic_cache.embedding_model)
 
-    # 4. Cache Check
+    # 4. CACHE CHECK
     if not bypass_cache:
         cached_response = semantic_cache.query_cache(payload.messages, threshold=0.95)
         if cached_response:
             latency_ms = round((time.time() - start_time) * 1000, 2)
             background_tasks.add_task(
-                log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False, original_user_prompt, final_prompt, score, is_enhanced, issues
+                log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, score, is_enhanced, issues
             )
             return ORJSONResponse(
                 content={
@@ -177,7 +158,7 @@ async def proxy_chat_completion(
                 headers={"X-Proxy-Cache-Hit": "True", "X-Routed-To": "CACHE"}
             )
 
-    # 5. Resilient Network Forwarding Loop
+    # 5. NETWORK FORWARDING
     providers_to_try = FALLBACK_PRIORITY.get(primary_target, ["ollama", "groq", "gemini"])
     fallback_used = False
     actual_routing_reason = routing_reason
@@ -225,7 +206,7 @@ async def proxy_chat_completion(
                 background_tasks.add_task(
                     log_transaction_and_routing, 
                     x_app_id, primary_target, current_provider, prompt_tokens, completion_tokens, latency_ms, False, actual_routing_reason, fallback_used,
-                    original_user_prompt, final_prompt, score, is_enhanced, issues
+                    scrubbed_prompt, final_prompt, score, is_enhanced, issues
                 )
 
                 return ORJSONResponse(
