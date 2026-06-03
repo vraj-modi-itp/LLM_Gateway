@@ -1,9 +1,14 @@
 import time
+import json
 import numpy as np
 from typing import List, Tuple, Dict
 from fastapi import APIRouter, Header, HTTPException, status, BackgroundTasks
 from fastapi.responses import ORJSONResponse
 import httpx
+
+# --- Observability & Semantic Conventions ---
+from opentelemetry import trace
+from openinference.semconv.trace import SpanAttributes, OpenInferenceSpanKindValues
 
 from app.api.schemas import ChatCompletionRequest, ChatMessage
 from app.core.config import settings
@@ -111,26 +116,25 @@ async def proxy_chat_completion(
     x_app_id: str = Header(..., description="Internal app identifier"),
     x_bypass_cache: str = Header("false", description="Skip caching") 
 ):
+    # Fetch the tracer here at invocation time to avoid import-order race conditions
+    tracer = trace.get_tracer("ai-proxy-gateway")
+    
     start_time = time.time()
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
     
-    # 1. DLP SECURITY SCAN (HAPPENS FIRST)
-    # This guarantees that all emails, SSNs, and phone numbers are converted to <EMAIL> tags
+    # 1. DLP SECURITY SCAN
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
     
     user_prompt_index = -1
     scrubbed_prompt = ""
-    
     for i in range(len(sanitized_messages) - 1, -1, -1):
         if sanitized_messages[i].role == "user":
             user_prompt_index = i
-            # The prompt is now fully sanitized BEFORE hitting the intelligence engine
             scrubbed_prompt = sanitized_messages[i].content
             break
 
-    # 2. PROMPT INTELLIGENCE ENGINE (Uses the fully scrubbed prompt)
+    # 2. PROMPT INTELLIGENCE ENGINE
     score, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
-    
     if is_enhanced and user_prompt_index != -1:
         sanitized_messages[user_prompt_index].content = final_prompt
         
@@ -147,6 +151,21 @@ async def proxy_chat_completion(
             background_tasks.add_task(
                 log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, score, is_enhanced, issues
             )
+            
+            with tracer.start_as_current_span("semantic_cache_hit") as span:
+                span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
+                span.set_attribute(SpanAttributes.LLM_MODEL_NAME, "qdrant_cache")
+                span.set_attribute(SpanAttributes.LLM_PROVIDER, "local_cache")
+                
+                # Render incoming conversation sequence for the cache UI
+                for i, msg in enumerate(payload.messages):
+                    span.set_attribute(f"llm.input_messages.{i}.message.role", msg.role)
+                    span.set_attribute(f"llm.input_messages.{i}.message.content", msg.content)
+
+                # Render outgoing cached choice
+                span.set_attribute("llm.output_messages.0.message.role", "assistant")
+                span.set_attribute("llm.output_messages.0.message.content", cached_response)
+
             return ORJSONResponse(
                 content={
                     "id": "chatcmpl-cached",
@@ -158,7 +177,7 @@ async def proxy_chat_completion(
                 headers={"X-Proxy-Cache-Hit": "True", "X-Routed-To": "CACHE"}
             )
 
-    # 5. NETWORK FORWARDING
+    # 5. NETWORK FORWARDING WITH FALLBACKS
     providers_to_try = FALLBACK_PRIORITY.get(primary_target, ["ollama", "groq", "gemini"])
     fallback_used = False
     actual_routing_reason = routing_reason
@@ -179,48 +198,69 @@ async def proxy_chat_completion(
         if fallback_used:
             actual_routing_reason = f"Fallback trigger (Original target: {primary_target})"
 
-        async with httpx.AsyncClient(timeout=current_timeout) as client:
-            try:
-                response = await client.post(target_url, json=temp_payload, headers=headers)
-                
-                if response.status_code != 200:
+        with tracer.start_as_current_span(f"llm_call_{current_provider}") as span:
+            span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
+            span.set_attribute(SpanAttributes.LLM_PROVIDER, current_provider)
+            span.set_attribute(SpanAttributes.LLM_MODEL_NAME, temp_payload["model"])
+            
+            # Map conversation history arrays natively so Arize displays chat bubble views
+            for i, msg in enumerate(temp_payload["messages"]):
+                span.set_attribute(f"llm.input_messages.{i}.message.role", msg["role"])
+                span.set_attribute(f"llm.input_messages.{i}.message.content", msg["content"])
+
+            async with httpx.AsyncClient(timeout=current_timeout) as client:
+                try:
+                    response = await client.post(target_url, json=temp_payload, headers=headers)
+                    
+                    if response.status_code != 200:
+                        span.set_attribute("http.status_code", response.status_code)
+                        if attempt_idx < len(providers_to_try) - 1:
+                            fallback_used = True
+                            continue 
+                        else:
+                            return ORJSONResponse(content=response.json(), status_code=response.status_code)
+
+                    response_json = response.json()
+                    usage = response_json.get("usage", {})
+                    prompt_tokens = usage.get("prompt_tokens", 0)
+                    completion_tokens = usage.get("completion_tokens", 0)
+                    
+                    choices = response_json.get("choices", [])
+                    if choices:
+                        assistant_text = choices[0].get("message", {}).get("content", "")
+                        
+                        # Map output natively to active chat attributes
+                        span.set_attribute("llm.output_messages.0.message.role", "assistant")
+                        span.set_attribute("llm.output_messages.0.message.content", assistant_text)
+                        
+                        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_PROMPT, prompt_tokens)
+                        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, completion_tokens)
+                        span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_TOTAL, prompt_tokens + completion_tokens)
+
+                        if assistant_text and not bypass_cache:
+                            semantic_cache.update_cache(payload.messages, assistant_text)
+
+                    latency_ms = round((time.time() - start_time) * 1000, 2)
+                    
+                    background_tasks.add_task(
+                        log_transaction_and_routing, 
+                        x_app_id, primary_target, current_provider, prompt_tokens, completion_tokens, latency_ms, False, actual_routing_reason, fallback_used,
+                        scrubbed_prompt, final_prompt, score, is_enhanced, issues
+                    )
+
+                    return ORJSONResponse(
+                        content=response_json,
+                        status_code=response.status_code,
+                        headers={
+                            "X-Proxy-Latency-Ms": str(latency_ms),
+                            "X-Routed-To": current_provider.upper(),
+                            "X-Fallback-Triggered": str(fallback_used)
+                        }
+                    )
+
+                except httpx.RequestError as exc:
+                    span.record_exception(exc)
                     if attempt_idx < len(providers_to_try) - 1:
                         fallback_used = True
-                        continue 
-                    else:
-                        return ORJSONResponse(content=response.json(), status_code=response.status_code)
-
-                response_json = response.json()
-                usage = response_json.get("usage", {})
-                prompt_tokens = usage.get("prompt_tokens", 0)
-                completion_tokens = usage.get("completion_tokens", 0)
-                
-                choices = response_json.get("choices", [])
-                if choices:
-                    assistant_text = choices[0].get("message", {}).get("content", "")
-                    if assistant_text and not bypass_cache:
-                        semantic_cache.update_cache(payload.messages, assistant_text)
-
-                latency_ms = round((time.time() - start_time) * 1000, 2)
-                
-                background_tasks.add_task(
-                    log_transaction_and_routing, 
-                    x_app_id, primary_target, current_provider, prompt_tokens, completion_tokens, latency_ms, False, actual_routing_reason, fallback_used,
-                    scrubbed_prompt, final_prompt, score, is_enhanced, issues
-                )
-
-                return ORJSONResponse(
-                    content=response_json,
-                    status_code=response.status_code,
-                    headers={
-                        "X-Proxy-Latency-Ms": str(latency_ms),
-                        "X-Routed-To": current_provider.upper(),
-                        "X-Fallback-Triggered": str(fallback_used)
-                    }
-                )
-
-            except httpx.RequestError as exc:
-                if attempt_idx < len(providers_to_try) - 1:
-                    fallback_used = True
-                    continue
-                raise HTTPException(status_code=504, detail=f"Network failure on all fallbacks: {str(exc)}")
+                        continue
+                    raise HTTPException(status_code=504, detail=f"Network failure on all fallbacks: {str(exc)}")
