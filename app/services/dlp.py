@@ -62,4 +62,25 @@ class DLPService:
 
         return sanitized_messages, list(detected_entities), any_redaction_triggered
 
+    def scan_and_redact_text(self, text: str) -> str:
+        """Scans and redacts a raw string. Used for Egress Output Guardrails."""
+        if not text:
+            return text
+            
+        analysis_results = self.analyzer.analyze(
+            text=text,
+            language="en",
+            entities=self.target_entities
+        )
+        
+        if analysis_results:
+            anonymized_result = self.anonymizer.anonymize(
+                text=text,
+                analyzer_results=analysis_results,
+                operators=self.operators
+            )
+            return anonymized_result.text
+            
+        return text
+
 dlp_service = DLPService()
