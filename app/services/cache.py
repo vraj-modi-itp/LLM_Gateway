@@ -1,6 +1,6 @@
 import uuid
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from sentence_transformers import SentenceTransformer
 
 class SemanticCacheService:
@@ -34,7 +34,7 @@ class SemanticCacheService:
                 return msg.content
         return ""
 
-    def query_cache(self, messages, threshold: float = 0.90):
+    def query_cache(self, messages, threshold: float = 0.90, session_id: str = None):
         # Guard clause in case it's called before initialization completes
         if not self.embedding_model or not self.qdrant_client:
             return None
@@ -45,19 +45,31 @@ class SemanticCacheService:
 
         query_vector = self.embedding_model.encode(user_prompt).tolist()
         
-        # --- THE FIX IS HERE ---
+        # --- THE FIX: SESSION ISOLATION FILTER ---
+        # If a session_id is provided, block Qdrant from matching any records that share that same ID
+        query_filter = None
+        if session_id:
+            query_filter = Filter(
+                must_not=[
+                    FieldCondition(
+                        key="session_id",
+                        match=MatchValue(value=session_id)
+                    )
+                ]
+            )
+        
         search_results = self.qdrant_client.query_points(
             collection_name=self.collection_name,
             query=query_vector,
+            query_filter=query_filter,
             limit=1
         ).points
-        # -----------------------
 
         if search_results and search_results[0].score >= threshold:
             return search_results[0].payload.get("response_text")
         return None
 
-    def update_cache(self, messages, response_text: str):
+    def update_cache(self, messages, response_text: str, session_id: str = None):
         if not self.embedding_model or not self.qdrant_client:
             return
 
@@ -68,6 +80,7 @@ class SemanticCacheService:
         query_vector = self.embedding_model.encode(user_prompt).tolist()
         point_id = str(uuid.uuid4())
 
+        # Save the session_id directly into Qdrant's payload so it can be filtered later
         self.qdrant_client.upsert(
             collection_name=self.collection_name,
             points=[
@@ -76,7 +89,8 @@ class SemanticCacheService:
                     vector=query_vector,
                     payload={
                         "prompt_text": user_prompt,
-                        "response_text": response_text
+                        "response_text": response_text,
+                        "session_id": session_id 
                     }
                 )
             ]

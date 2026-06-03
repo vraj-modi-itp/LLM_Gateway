@@ -116,7 +116,9 @@ async def proxy_chat_completion(
     payload: ChatCompletionRequest,
     background_tasks: BackgroundTasks,
     x_app_id: str = Header(..., description="Internal app identifier"),
-    x_bypass_cache: str = Header("false", description="Skip caching") 
+    x_bypass_cache: str = Header("false", description="Skip caching"),
+    x_session_id: str = Header(None, description="Unique session ID for agent loop isolation"),
+    x_request_type: str = Header("standard", description="Traffic classifier: standard or agent")
 ):
     tracer = trace.get_tracer("ai-proxy-gateway")
     
@@ -138,6 +140,10 @@ async def proxy_chat_completion(
 
     start_time = time.time()
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
+    
+    # --- DYNAMIC CACHE THRESHOLD ---
+    # Agents need near-perfect matches (0.99) to avoid loops. Humans get fuzzy matches (0.92).
+    cache_threshold = 0.99 if x_request_type.lower() == "agent" else 0.92
     
     # --- 2. INGRESS SECURITY: DLP SCAN ---
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
@@ -167,9 +173,13 @@ async def proxy_chat_completion(
     # --- 4. INTELLIGENT INTENT CLASSIFICATION ---
     primary_target, routing_reason = intent_classifier.classify(final_prompt, semantic_cache.embedding_model)
 
-    # --- 5. CACHE CHECK ---
+    # --- 5. CACHE CHECK (With Session Isolation) ---
     if not bypass_cache:
-        cached_response = semantic_cache.query_cache(payload.messages, threshold=0.95)
+        cached_response = semantic_cache.query_cache(
+            messages=payload.messages, 
+            threshold=cache_threshold, 
+            session_id=x_session_id
+        )
         if cached_response:
             latency_ms = round((time.time() - start_time) * 1000, 2)
             background_tasks.add_task(
@@ -274,8 +284,9 @@ async def proxy_chat_completion(
                         span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, completion_tokens)
                         span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_TOTAL, prompt_tokens + completion_tokens)
 
+                        # Write to cache with session metadata injected
                         if assistant_text and not bypass_cache:
-                            semantic_cache.update_cache(payload.messages, assistant_text)
+                            semantic_cache.update_cache(payload.messages, assistant_text, session_id=x_session_id)
 
                     latency_ms = round((time.time() - start_time) * 1000, 2)
                     
@@ -302,6 +313,7 @@ async def proxy_chat_completion(
                         continue
                     raise HTTPException(status_code=504, detail=f"Network failure on all fallbacks: {str(exc)}")
 
+
 # --- NATIVE GOOGLE SDK PASSTHROUGH ROUTE ---
 @google_native_router.post("/{api_version}/models/{model_name}:{action}", response_class=ORJSONResponse)
 async def google_native_passthrough(
@@ -314,14 +326,9 @@ async def google_native_passthrough(
     x_target_provider: str = Header("gemini", description="Target LLM provider")
 ):
     start_time = time.time()
-    
-    # Extract the native Google payload exactly as the SDK sent it
     raw_payload = await request.json()
-    
-    # Construct the actual Google API destination URL
     target_url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:{action}"
     
-    # Inject the real API key at the proxy layer (so the client doesn't need it)
     headers = {
         "Content-Type": "application/json",
         "x-goog-api-key": settings.GEMINI_API_KEY
@@ -329,9 +336,7 @@ async def google_native_passthrough(
     
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
-            # Forward the exact payload transparently
             response = await client.post(target_url, json=raw_payload, headers=headers)
-            
             latency_ms = round((time.time() - start_time) * 1000, 2)
             
             return ORJSONResponse(

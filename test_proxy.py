@@ -1,6 +1,7 @@
 import requests
 import time
 import copy
+import uuid
 
 PROXY_URL = "http://localhost:8000/v1/chat/completions"
 
@@ -158,4 +159,43 @@ send_request(
     "email the report to ceo@intuitive.ai and make sure it looks good", 
     "14. DLP + Enhancement Safety (Expect: Email redacted BEFORE enhancement injection)",
     extra_headers={"x-app-id": "sales_assistant", "x-bypass-cache": "true"}
+)
+
+# ==============================================================================
+# PHASE 6: SESSION ISOLATION & DYNAMIC THRESHOLDS (ReAct Agent Loop Fix)
+# ==============================================================================
+
+agent_session = str(uuid.uuid4())
+print(f"\n[+] Starting simulated Agent Run with Session ID: {agent_session}")
+
+send_request(
+    "Calculate the square root of 144.", 
+    "15. Agent Step 1 (Expect: NETWORK MISS, saves to Qdrant with Session ID)",
+    extra_headers={
+        "x-request-type": "agent", 
+        "x-session-id": agent_session
+    }
+)
+
+time.sleep(1) # Let Qdrant index
+
+send_request(
+    "Calculate the square root of 144.\nThought: The answer is 12.\nAction: Verify.", 
+    "16. Agent Step 2 (Expect: NETWORK MISS. Blocked from hitting Step 1 by Session Isolation!)",
+    extra_headers={
+        "x-request-type": "agent", 
+        "x-session-id": agent_session
+    }
+)
+
+new_user_session = str(uuid.uuid4())
+print(f"\n[+] Starting NEW run tomorrow with Session ID: {new_user_session}")
+
+send_request(
+    "Calculate the square root of 144.", 
+    "17. New User Request (Expect: CACHE HIT. Allowed to pull from previous isolated sessions)",
+    extra_headers={
+        "x-request-type": "standard", 
+        "x-session-id": new_user_session
+    }
 )

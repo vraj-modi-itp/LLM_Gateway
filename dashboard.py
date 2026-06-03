@@ -93,11 +93,15 @@ with tab1:
 
     st.subheader("Recent Transactions Log")
     if not df.empty:
-        display_df = df[['created_at', 'app_id', 'target_provider', 'latency_ms', 'cost_usd', 'is_cached']].copy()
+        # Combine prompt and completion tokens for a clean single-column view
+        df['total_tokens'] = df['prompt_tokens'] + df['completion_tokens']
+        
+        display_df = df[['created_at', 'app_id', 'target_provider', 'total_tokens', 'latency_ms', 'cost_usd', 'is_cached']].copy()
         display_df.rename(columns={
             'created_at': 'Timestamp',
             'app_id': 'Application',
             'target_provider': 'Provider',
+            'total_tokens': 'Total Tokens',
             'latency_ms': 'Latency (ms)',
             'cost_usd': 'Cost ($)',
             'is_cached': 'Cache Hit'
