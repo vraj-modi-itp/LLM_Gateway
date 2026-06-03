@@ -2,7 +2,7 @@ import time
 import json
 import numpy as np
 from typing import List, Tuple, Dict
-from fastapi import APIRouter, Header, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Header, HTTPException, status, BackgroundTasks, Request
 from fastapi.responses import ORJSONResponse
 import httpx
 
@@ -19,6 +19,7 @@ from app.services.prompt_analyzer import prompt_analyzer
 from app.services.budget import budget_service
 
 router = APIRouter(prefix="/v1")
+google_native_router = APIRouter()
 
 PROVIDER_URLS = {
     "groq": "https://api.groq.com/openai/v1/chat/completions",
@@ -300,3 +301,44 @@ async def proxy_chat_completion(
                         fallback_used = True
                         continue
                     raise HTTPException(status_code=504, detail=f"Network failure on all fallbacks: {str(exc)}")
+
+# --- NATIVE GOOGLE SDK PASSTHROUGH ROUTE ---
+@google_native_router.post("/{api_version}/models/{model_name}:{action}", response_class=ORJSONResponse)
+async def google_native_passthrough(
+    api_version: str,
+    model_name: str,
+    action: str,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    x_app_id: str = Header("adk-default-app", description="Internal app identifier"),
+    x_target_provider: str = Header("gemini", description="Target LLM provider")
+):
+    start_time = time.time()
+    
+    # Extract the native Google payload exactly as the SDK sent it
+    raw_payload = await request.json()
+    
+    # Construct the actual Google API destination URL
+    target_url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:{action}"
+    
+    # Inject the real API key at the proxy layer (so the client doesn't need it)
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": settings.GEMINI_API_KEY
+    }
+    
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        try:
+            # Forward the exact payload transparently
+            response = await client.post(target_url, json=raw_payload, headers=headers)
+            
+            latency_ms = round((time.time() - start_time) * 1000, 2)
+            
+            return ORJSONResponse(
+                content=response.json(),
+                status_code=response.status_code,
+                headers={"X-Proxy-Latency-Ms": str(latency_ms)}
+            )
+            
+        except httpx.RequestError as exc:
+            raise HTTPException(status_code=504, detail=f"Native Google proxy failure: {str(exc)}")

@@ -20,7 +20,7 @@ tracer = get_tracer()
 # 2. IMPORT ROUTERS & SERVICES AFTER TRACER IS GLOBAL
 # ---------------------------------------------------------
 from app.core.config import settings
-from app.api.router import router as api_router
+from app.api.router import router as api_router, google_native_router
 from app.services.cache import semantic_cache
 from app.services.telemetry import refresh_provider_metrics
 from app.services.budget import budget_service
@@ -88,6 +88,7 @@ async def log_and_trace_requests(request: Request, call_next):
         return response
 
 app.include_router(api_router)
+app.include_router(google_native_router)
 
 @app.get("/health")
 async def health_check():
