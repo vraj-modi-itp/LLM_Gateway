@@ -19,6 +19,15 @@ from app.services.prompt_analyzer import prompt_analyzer
 from app.services.budget import budget_service
 from app.services.audit import audit_service  # Added teammate's new audit service
 
+# --- Path A Audit Logging Service ---
+try:
+    from app.services.audit_service import audit_service
+except ImportError:
+    # Safe fallback if the file isn't created yet to prevent crashing
+    class DummyAudit:
+        async def log_interaction(self, *args, **kwargs): pass
+    audit_service = DummyAudit()
+
 router = APIRouter(prefix="/v1")
 google_native_router = APIRouter()
 
@@ -121,13 +130,14 @@ async def proxy_chat_completion(
     x_bypass_cache: str = Header("false", description="Skip caching"),
     x_session_id: str = Header(None, description="Unique session ID for agent loop isolation"),
     x_request_type: str = Header("standard", description="Traffic classifier: standard or agent"),
-    x_opt_out_audit: str = Header("false", description="Opt out of audit logging")
+    x_opt_out_audit: str = Header("false", description="Privacy flag to skip chat history logging") # NEW: Privacy Opt-Out Header
 ):
     tracer = trace.get_tracer("ai-proxy-gateway")
     
-    # Process the opt-out flag securely (From teammate's PR)
+    # Process the opt-out flag securely
     opt_out_audit = x_opt_out_audit.lower() in ["true", "1", "yes"]
     
+    # --- 1. ACTIVE GOVERNANCE: BUDGET & RATE LIMIT ENFORCEMENT ---
     if not budget_service.is_allowed(x_app_id):
         with tracer.start_as_current_span("blocked_by_gateway_guardrail") as span:
             span.set_attribute("app.id", x_app_id)
@@ -167,7 +177,7 @@ async def proxy_chat_completion(
     # --- 3. PROMPT INTELLIGENCE ENGINE (Categorical Engine Update) ---
     category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
     
-    # If the user's prompt is INSUFFICIENT, we intercept and return it immediately without forwarding to main LLMs
+    # If the user's prompt is INSUFFICIENT, intercept and return immediately
     if category == "INSUFFICIENT":
         latency_ms = round((time.time() - start_time) * 1000, 2)
         background_tasks.add_task(
@@ -201,9 +211,25 @@ async def proxy_chat_completion(
         )
         if cached_response:
             latency_ms = round((time.time() - start_time) * 1000, 2)
+            
+            # Standard Cost Telemetry
             background_tasks.add_task(
                 log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
             )
+            
+            # --- PATH A STATELESS AUDIT LOGGING (CACHE HIT) ---
+            if not opt_out_audit:  # Ensure Privacy Header is respected
+                background_tasks.add_task(
+                    audit_service.log_interaction,
+                    session_id=x_session_id or "stateless-session",
+                    app_id=x_app_id,
+                    provider="qdrant_cache",
+                    model_used=payload.model,
+                    messages=payload.model_dump()["messages"],
+                    response_text=cached_response,
+                    prompt_tokens=0,
+                    completion_tokens=0
+                )
             
             with tracer.start_as_current_span("semantic_cache_hit") as span:
                 span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
@@ -275,6 +301,7 @@ async def proxy_chat_completion(
                     completion_tokens = usage.get("completion_tokens", 0)
                     
                     choices = response_json.get("choices", [])
+                    assistant_text = ""
                     if choices:
                         raw_assistant_text = choices[0].get("message", {}).get("content", "")
                         
@@ -300,6 +327,7 @@ async def proxy_chat_completion(
 
                     latency_ms = round((time.time() - start_time) * 1000, 2)
                     
+                    # Standard Cost Telemetry
                     background_tasks.add_task(
                         log_transaction_and_routing, 
                         x_app_id, primary_target, current_provider, prompt_tokens, completion_tokens, latency_ms, False, actual_routing_reason, fallback_used,

@@ -70,3 +70,21 @@ CREATE TABLE IF NOT EXISTS alerts (
     fired_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     acknowledged BOOLEAN DEFAULT FALSE
 );
+
+-- Audit table to capture stateless chat history across applications
+CREATE TABLE IF NOT EXISTS audit_chat_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id VARCHAR(255) NOT NULL,
+    app_id VARCHAR(100) NOT NULL,
+    provider VARCHAR(50) NOT NULL,
+    model_used VARCHAR(100) NOT NULL,
+    prompt_tokens INT DEFAULT 0,
+    completion_tokens INT DEFAULT 0,
+    messages JSONB NOT NULL, -- Captures the entire history array sent by client
+    response TEXT NOT NULL,  -- Captures the final answer returned by the gateway
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Indexing for fast retrieval during security audits and dashboard rendering
+CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_chat_history(session_id);
+CREATE INDEX IF NOT EXISTS idx_audit_app ON audit_chat_history(app_id);
