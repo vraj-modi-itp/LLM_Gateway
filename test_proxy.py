@@ -34,7 +34,6 @@ def send_request(prompt_text, test_name, extra_headers=None):
             data = response.json()
             resp_headers = response.headers
             
-            # Print a snippet of the response safely
             choices = data.get('choices', [])
             if choices:
                 answer = choices[0].get('message', {}).get('content', '').strip().replace('\n', ' ')
@@ -42,7 +41,6 @@ def send_request(prompt_text, test_name, extra_headers=None):
             else:
                 print("🤖 LLM Answer: [Empty/Malformed]")
             
-            # Print telemetry
             print(f"\n📊 --- Telemetry ---")
             print(f"⏱️ Latency        : {round((end - start) * 1000, 2)} ms")
             print(f"⚡ Cache Hit      : {resp_headers.get('X-Proxy-Cache-Hit', 'False')}")
@@ -60,83 +58,78 @@ def send_request(prompt_text, test_name, extra_headers=None):
 # PHASE 1: SEMANTIC ROUTING BOUNDARIES
 # ==============================================================================
 
-# send_request(
-#     "Name the capital city of Australia. Answer in one word.", 
-#     "1. Low-Stakes Routing (Expect: OLLAMA)"
-# )
+send_request(
+    "Name the capital city of Australia. Answer in one word.", 
+    "1. Low-Stakes Routing (Expect: OLLAMA)"
+)
 
-# send_request(
-#     "Write a SQL query to join the users and orders tables where order_total > 100.", 
-#     "2. Explicit Code Intent (Expect: GROQ)"
-# )
+send_request(
+    "Write a SQL query to join the users and orders tables where order_total > 100.", 
+    "2. Explicit Code Intent (Expect: GROQ)"
+)
 
-# send_request(
-#     "Can you explain the history of object-oriented programming? I don't need code, just the philosophy.",
-#     "3. Nuanced Code Intent (Expect: GROQ - Semantic router should catch this via centroid)"
-# )
+send_request(
+    "Can you explain the history of object-oriented programming? I don't need code, just the philosophy.",
+    "3. Nuanced Code Intent (Expect: GROQ - Semantic router should catch this via centroid)"
+)
 
-# # ==============================================================================
-# # PHASE 2: ADVANCED CACHE MANIPULATION
-# # ==============================================================================
-# time.sleep(1) # Let Qdrant index Test 2
+# ==============================================================================
+# PHASE 2: ADVANCED CACHE MANIPULATION
+# ==============================================================================
+time.sleep(1) # Let Qdrant index Test 2
 
-# send_request(
-#     "Write a SQL query to join the users and orders tables where order_total > 100.", 
-#     "4. Exact Cache Match (Expect: CACHE HIT)"
-# )
+send_request(
+    "Write a SQL query to join the users and orders tables where order_total > 100.", 
+    "4. Exact Cache Match (Expect: CACHE HIT)"
+)
 
-# send_request(
-#     "Create a SQL query that joins the orders and users tables where the total is greater than 100.", 
-#     "5. Semantic Cache Match (Expect: CACHE HIT - Different words, same meaning!)"
-# )
+send_request(
+    "Create a SQL query that joins the orders and users tables where the total is greater than 100.", 
+    "5. Semantic Cache Match (Expect: CACHE HIT - Different words, same meaning!)"
+)
 
-# send_request(
-#     "Write a SQL query to join the users and orders tables where order_total > 100.", 
-#     "6. Cache Bypass Header (Expect: GROQ - Forced Network Call)",
-#     extra_headers={"x-bypass-cache": "true"}
-# )
+send_request(
+    "Write a SQL query to join the users and orders tables where order_total > 100.", 
+    "6. Cache Bypass Header (Expect: GROQ - Forced Network Call)",
+    extra_headers={"x-bypass-cache": "true"}
+)
 
-# # ==============================================================================
-# # PHASE 3: DLP & SECURITY INTERSECTIONS
-# # ==============================================================================
+# ==============================================================================
+# PHASE 3: DLP & SECURITY INTERSECTIONS
+# ==============================================================================
 
-# send_request(
-#     "Please update my file. My SSN is 111-22-3333, my phone is 555-0199, and my card is 4111-1111-1111-1111.", 
-#     "7. Multi-Entity PII Attack (Expect: Redaction of all 3 entities)"
-# )
+send_request(
+    "Please update my file. My SSN is 111-22-3333, my phone is 555-0199, and my card is 4111-1111-1111-1111.", 
+    "7. Multi-Entity PII Attack (Expect: Redaction of all 3 entities)"
+)
 
-# time.sleep(1)
+time.sleep(1)
 
-# # Here we send a completely DIFFERENT SSN, Phone, and Card. 
-# # BUT because Presidio redacts them into <US_SSN>, <PHONE_NUMBER>, etc. BEFORE hitting the cache,
-# # the cache should actually see this as an EXACT MATCH to Test 7!
-# send_request(
-#     "Please update my file. My SSN is 999-88-7777, my phone is 555-0987, and my card is 5555-4444-3333-2222.", 
-#     "8. DLP + Cache Intersection (Expect: CACHE HIT on redacted template!)"
-# )
+send_request(
+    "Please update my file. My SSN is 999-88-7777, my phone is 555-0987, and my card is 5555-4444-3333-2222.", 
+    "8. DLP + Cache Intersection (Expect: CACHE HIT on redacted template!)"
+)
 
-# # ==============================================================================
-# # PHASE 4: PAYLOAD & LIMIT STRESS TESTS
-# # ==============================================================================
+# ==============================================================================
+# PHASE 4: PAYLOAD & LIMIT STRESS TESTS
+# ==============================================================================
 
-# send_request(
-#     "   \n  \t  ", 
-#     "9. Empty / Whitespace Prompt (Expect: Graceful handling by default route)"
-# )
+send_request(
+    "   \n  \t  ", 
+    "9. Empty / Whitespace Prompt (Expect: Graceful handling by default route)"
+)
 
-# # Generate a prompt that is EXACTLY 750 words (under the 800 limit)
-# long_text = "apple " * 750
-# send_request(
-#     long_text, 
-#     "10. High-Volume Standard Routing (Expect: Semantic router decides - likely OLLAMA/GEMINI)"
-# )
+long_text = "apple " * 750
+send_request(
+    long_text, 
+    "10. High-Volume Standard Routing (Expect: Semantic router decides - likely OLLAMA/GEMINI)"
+)
 
-# # Generate a prompt that is EXACTLY 810 words (over the 800 limit)
-# massive_text = "apple " * 810
-# send_request(
-#     massive_text, 
-#     "11. Hard Limit Override Routing (Expect: Forced to GEMINI due to >800 word count)"
-# )
+massive_text = "apple " * 810
+send_request(
+    massive_text, 
+    "11. Hard Limit Override Routing (Expect: Forced to GEMINI due to >800 word count)"
+)
 
 # ==============================================================================
 # PHASE 5: PROMPT INTELLIGENCE & AUTO-ENHANCEMENT
@@ -154,7 +147,6 @@ send_request(
     extra_headers={"x-bypass-cache": "true"}
 )
 
-# Demonstrating PII Masking + Enhancement Pipeline Safety
 send_request(
     "email the report to ceo@intuitive.ai and make sure it looks good", 
     "14. DLP + Enhancement Safety (Expect: Email redacted BEFORE enhancement injection)",
@@ -162,7 +154,7 @@ send_request(
 )
 
 # ==============================================================================
-# PHASE 6: SESSION ISOLATION & DYNAMIC THRESHOLDS (ReAct Agent Loop Fix)
+# PHASE 6: SESSION ISOLATION & DYNAMIC THRESHOLDS
 # ==============================================================================
 
 agent_session = str(uuid.uuid4())
@@ -177,7 +169,7 @@ send_request(
     }
 )
 
-time.sleep(1) # Let Qdrant index
+time.sleep(1) 
 
 send_request(
     "Calculate the square root of 144.\nThought: The answer is 12.\nAction: Verify.", 
