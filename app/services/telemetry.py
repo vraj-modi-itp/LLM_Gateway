@@ -67,7 +67,7 @@ async def log_transaction_and_routing(
     fallback_used: bool,
     original_prompt: str = "",
     enhanced_prompt: str = "",
-    prompt_score: float = 0.0,
+    prompt_category: str = "UNKNOWN",
     is_enhanced: bool = False,
     detected_issues: List[str] = None
 ):
@@ -109,15 +109,15 @@ async def log_transaction_and_routing(
                 tx_id, routed_to, routing_reason, fallback_used
             )
             
-            # 3. Insert Prompt Intelligence Metrics
+            # 3. Insert Prompt Intelligence Metrics (Updated for Categories)
             if original_prompt:
                 await conn.execute(
                     """
                     INSERT INTO prompt_quality_scores 
-                    (transaction_id, original_prompt, enhanced_prompt, score, is_enhanced, detected_issues)
+                    (transaction_id, original_prompt, enhanced_prompt, category, is_enhanced, detected_issues)
                     VALUES ($1, $2, $3, $4, $5, $6)
                     """,
-                    tx_id, original_prompt, enhanced_prompt, prompt_score, is_enhanced, detected_issues
+                    tx_id, original_prompt, enhanced_prompt, prompt_category, is_enhanced, detected_issues
                 )
 
             # 4. ATOMIC BUDGET DEDUCTION (Phase 3 Guardrail)

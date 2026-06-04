@@ -142,60 +142,96 @@ def send_request(prompt_text, test_name, extra_headers=None):
 # PHASE 5: PROMPT INTELLIGENCE & AUTO-ENHANCEMENT
 # ==============================================================================
 
-send_request(
-    "build me something cool i need it fast just do it for me", 
-    "12. The Rambling Wall (Expect: Low Score, Auto-Enhanced with Context)",
-    extra_headers={"x-app-id": "qa-stress-test-v3", "x-bypass-cache": "true"}
-)
+# send_request(
+#     "build me something cool i need it fast just do it for me", 
+#     "12. The Rambling Wall (Expect: Low Score, Auto-Enhanced with Context)",
+#     extra_headers={"x-app-id": "qa-stress-test-v3", "x-bypass-cache": "true"}
+# )
 
-send_request(
-    "Write SQL query joining users and orders.", 
-    "13. Short But Perfect (Expect: Max Score, No Enhancement needed)",
-    extra_headers={"x-bypass-cache": "true"}
-)
+# send_request(
+#     "Write SQL query joining users and orders.", 
+#     "13. Short But Perfect (Expect: Max Score, No Enhancement needed)",
+#     extra_headers={"x-bypass-cache": "true"}
+# )
 
-# Demonstrating PII Masking + Enhancement Pipeline Safety
-send_request(
-    "email the report to ceo@intuitive.ai and make sure it looks good", 
-    "14. DLP + Enhancement Safety (Expect: Email redacted BEFORE enhancement injection)",
-    extra_headers={"x-app-id": "sales_assistant", "x-bypass-cache": "true"}
-)
+# # Demonstrating PII Masking + Enhancement Pipeline Safety
+# send_request(
+#     "email the report to ceo@intuitive.ai and make sure it looks good", 
+#     "14. DLP + Enhancement Safety (Expect: Email redacted BEFORE enhancement injection)",
+#     extra_headers={"x-app-id": "sales_assistant", "x-bypass-cache": "true"}
+# )
 
 # ==============================================================================
 # PHASE 6: SESSION ISOLATION & DYNAMIC THRESHOLDS (ReAct Agent Loop Fix)
 # ==============================================================================
 
-agent_session = str(uuid.uuid4())
-print(f"\n[+] Starting simulated Agent Run with Session ID: {agent_session}")
+# agent_session = str(uuid.uuid4())
+# print(f"\n[+] Starting simulated Agent Run with Session ID: {agent_session}")
 
+# send_request(
+#     "Calculate the square root of 144.", 
+#     "15. Agent Step 1 (Expect: NETWORK MISS, saves to Qdrant with Session ID)",
+#     extra_headers={
+#         "x-request-type": "agent", 
+#         "x-session-id": agent_session
+#     }
+# )
+
+# time.sleep(1) # Let Qdrant index
+
+# send_request(
+#     "Calculate the square root of 144.\nThought: The answer is 12.\nAction: Verify.", 
+#     "16. Agent Step 2 (Expect: NETWORK MISS. Blocked from hitting Step 1 by Session Isolation!)",
+#     extra_headers={
+#         "x-request-type": "agent", 
+#         "x-session-id": agent_session
+#     }
+# )
+
+# new_user_session = str(uuid.uuid4())
+# print(f"\n[+] Starting NEW run tomorrow with Session ID: {new_user_session}")
+
+# send_request(
+#     "Calculate the square root of 144.", 
+#     "17. New User Request (Expect: CACHE HIT. Allowed to pull from previous isolated sessions)",
+#     extra_headers={
+#         "x-request-type": "standard", 
+#         "x-session-id": new_user_session
+#     }
+# )
+
+# ---------------------------------------------------------
+# CATEGORY 1: INSUFFICIENT TESTS (Intercepted)
+# ---------------------------------------------------------
 send_request(
-    "Calculate the square root of 144.", 
-    "15. Agent Step 1 (Expect: NETWORK MISS, saves to Qdrant with Session ID)",
-    extra_headers={
-        "x-request-type": "agent", 
-        "x-session-id": agent_session
-    }
+    "make it work now do it fast", 
+    "1. Vague/Impossible Request (Expect: INSUFFICIENT)",
+    extra_headers={"x-bypass-cache": "true"}
 )
 
-time.sleep(1) # Let Qdrant index
-
+# ---------------------------------------------------------
+# CATEGORY 2: NEEDS_CONTEXT TESTS (Auto-Enhanced)
+# ---------------------------------------------------------
+# Notice the complete lack of technical nouns here. 
+# It asks for an action but provides zero specifics, forcing the SLM to realize it's empty.
 send_request(
-    "Calculate the square root of 144.\nThought: The answer is 12.\nAction: Verify.", 
-    "16. Agent Step 2 (Expect: NETWORK MISS. Blocked from hitting Step 1 by Session Isolation!)",
-    extra_headers={
-        "x-request-type": "agent", 
-        "x-session-id": agent_session
-    }
+    "Write a short update message for the team.", 
+    "2. Basic Text Task (Expect: NEEDS_CONTEXT)",
+    extra_headers={"x-app-id": "sales_assistant", "x-bypass-cache": "true"}
 )
 
-new_user_session = str(uuid.uuid4())
-print(f"\n[+] Starting NEW run tomorrow with Session ID: {new_user_session}")
-
 send_request(
-    "Calculate the square root of 144.", 
-    "17. New User Request (Expect: CACHE HIT. Allowed to pull from previous isolated sessions)",
-    extra_headers={
-        "x-request-type": "standard", 
-        "x-session-id": new_user_session
-    }
+    "Write a script that prints a greeting.", 
+    "3. Bare-Bones Coding Task (Expect: NEEDS_CONTEXT)",
+    extra_headers={"x-bypass-cache": "true"}
+)
+
+# ---------------------------------------------------------
+# CATEGORY 3: OPTIMAL TESTS (Direct Passthrough)
+# ---------------------------------------------------------
+# Packed with architectural constraints.
+send_request(
+    "Design a multi-tenant Java Spring Boot adapter interface for a scalable B2B SaaS e-commerce platform. Include explicit connection pooling limits, JWT validation filters, and a PostgreSQL schema migration strategy using Supabase.", 
+    "4. Highly Specific/Architectural (Expect: OPTIMAL)",
+    extra_headers={"x-bypass-cache": "true"}
 )

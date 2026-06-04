@@ -27,10 +27,10 @@ def load_data():
     except:
         df_tx = pd.DataFrame()
 
-    # 2. Prompt Quality
+    # 2. Prompt Quality (Updated for Category Logic)
     try:
         df_quality = pd.read_sql("""
-            SELECT t.app_id, t.created_at, p.original_prompt, p.enhanced_prompt, p.score, p.is_enhanced, p.detected_issues 
+            SELECT t.app_id, t.created_at, p.original_prompt, p.enhanced_prompt, p.category, p.is_enhanced, p.detected_issues 
             FROM prompt_quality_scores p
             JOIN llm_transactions t ON p.transaction_id = t.id
             ORDER BY t.created_at DESC
@@ -112,33 +112,36 @@ with tab1:
 # TAB 2: PROMPT INTELLIGENCE
 # ---------------------------------------------------------
 with tab2:
-    st.subheader("Prompt Quality & Auto-Enhancement")
-    st.markdown("Analyzes inbound queries for structural integrity and auto-injects context when instructions fall below the quality threshold.")
+    st.subheader("Prompt Quality Categorization & Auto-Enhancement")
+    st.markdown("Analyzes inbound queries. Rejects spam (Insufficient), automatically injects context for mid-tier prompts (Needs Context), and allows high-quality prompts to pass untouched (Optimal).")
     
     if df_quality.empty:
         st.info("No prompt quality data recorded yet.")
     else:
-        avg_score = df_quality['score'].mean()
-        enhanced_count = df_quality['is_enhanced'].sum()
+        # Categorical break down
+        optimal_count = len(df_quality[df_quality['category'] == 'OPTIMAL'])
+        enhanced_count = len(df_quality[df_quality['category'] == 'NEEDS_CONTEXT'])
+        rejected_count = len(df_quality[df_quality['category'] == 'INSUFFICIENT'])
         
-        col_q1, col_q2 = st.columns(2)
-        col_q1.metric("Average Inbound Quality Score", f"{avg_score:.1f} / 100")
-        col_q2.metric("Prompts Auto-Enhanced", f"{enhanced_count}")
+        col_q1, col_q2, col_q3 = st.columns(3)
+        col_q1.metric("Optimal (Passed Directly)", optimal_count)
+        col_q2.metric("Needs Context (Auto-Enhanced)", enhanced_count)
+        col_q3.metric("Insufficient (Rejected)", rejected_count)
         
         st.divider()
-        st.subheader("Quality Log")
+        st.subheader("Intelligence Logging")
         
-        display_quality_df = df_quality[['created_at', 'app_id', 'score', 'is_enhanced', 'original_prompt', 'enhanced_prompt']].copy()
+        display_quality_df = df_quality[['created_at', 'app_id', 'category', 'is_enhanced', 'original_prompt', 'enhanced_prompt']].copy()
         display_quality_df['enhanced_prompt'] = display_quality_df.apply(
-            lambda x: x['enhanced_prompt'] if x['is_enhanced'] else "[No Change Needed - Passed Threshold]", axis=1
+            lambda x: x['enhanced_prompt'] if x['is_enhanced'] else "[No Action Needed / Intercepted]", axis=1
         )
         display_quality_df.rename(columns={
             'created_at': 'Timestamp',
             'app_id': 'App ID',
-            'score': 'Score',
+            'category': 'Category',
             'is_enhanced': 'Enhanced?',
             'original_prompt': 'Original Prompt',
-            'enhanced_prompt': 'Enhanced Output'
+            'enhanced_prompt': 'Action / Enhanced Output'
         }, inplace=True)
         
         st.dataframe(display_quality_df, use_container_width=True, hide_index=True)
@@ -153,23 +156,18 @@ with tab3:
     if df_budgets.empty:
         st.info("No application budgets registered yet.")
     else:
-        # Create visual progress bars for each application's budget
         for _, row in df_budgets.iterrows():
             app_name = row['app_id']
             spent = float(row['current_month_cost'])
             limit = float(row['monthly_cost_limit_usd'])
             is_blocked = row['is_blocked']
             
-            # Calculate percentage, capping at 1.0 (100%) for the progress bar
             pct_used = min(spent / limit, 1.0) if limit > 0 else 1.0
-            
             status_icon = "🔴 BLOCKED (429 ENFORCED)" if is_blocked else "🟢 ACTIVE"
             
             st.markdown(f"**{app_name}** — {status_icon}")
-            
-            # Streamlit progress bar accepts a float between 0.0 and 1.0
             st.progress(pct_used, text=f"Spent: ${spent:.4f} / Limit: ${limit:.2f} ({pct_used*100:.1f}%)")
-            st.markdown("<br>", unsafe_allow_html=True) # Spacer
+            st.markdown("<br>", unsafe_allow_html=True) 
 
     st.divider()
     
@@ -179,7 +177,6 @@ with tab3:
     if df_alerts.empty:
         st.success("All clear! No anomalies detected recently.")
     else:
-        # Clean up the alerts dataframe for display
         display_alerts = df_alerts[['fired_at', 'alert_type', 'app_id', 'message']].copy()
         display_alerts.rename(columns={
             'fired_at': 'Timestamp',
@@ -187,6 +184,4 @@ with tab3:
             'app_id': 'Application',
             'message': 'Anomaly Details'
         }, inplace=True)
-        
-        # Display the alerts with a nice container width
         st.dataframe(display_alerts, use_container_width=True, hide_index=True)
