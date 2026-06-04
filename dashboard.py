@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import psycopg2
+import json
 
 st.set_page_config(page_title="LLM Proxy Dashboard", layout="wide")
 
@@ -50,16 +51,23 @@ def load_data():
     except:
         df_alerts = pd.DataFrame()
 
-    return df_tx, df_quality, df_budgets, df_alerts
+    # 5. NEW: Audit Chat History
+    try:
+        df_audit = pd.read_sql("SELECT * FROM audit_chat_history ORDER BY created_at DESC LIMIT 200", conn)
+    except:
+        df_audit = pd.DataFrame()
 
-df, df_quality, df_budgets, df_alerts = load_data()
+    return df_tx, df_quality, df_budgets, df_alerts, df_audit
 
-if df.empty and df_alerts.empty:
-    st.info("No LLM transactions or alerts logged yet. Run your test script to generate traffic!")
+df, df_quality, df_budgets, df_alerts, df_audit = load_data()
+
+if df.empty and df_alerts.empty and df_audit.empty:
+    st.info("No LLM transactions, alerts, or audit logs recorded yet. Run your test scripts to generate traffic!")
     st.stop()
 
 # --- TABBED LAYOUT ---
-tab1, tab2, tab3 = st.tabs(["🌐 Network & Cost Telemetry", "🧠 Prompt Intelligence", "⚖️ Governance & Budgets"])
+# Added Tab 4 for the Session Explorer
+tab1, tab2, tab3, tab4 = st.tabs(["🌐 Network & Cost Telemetry", "🧠 Prompt Intelligence", "⚖️ Governance & Budgets", "🕵️ Session Explorer"])
 
 # ---------------------------------------------------------
 # TAB 1: NETWORK & COST
@@ -185,3 +193,49 @@ with tab3:
             'message': 'Anomaly Details'
         }, inplace=True)
         st.dataframe(display_alerts, use_container_width=True, hide_index=True)
+
+# ---------------------------------------------------------
+# TAB 4: SESSION EXPLORER (AUDIT)
+# ---------------------------------------------------------
+with tab4:
+    st.subheader("🕵️ Centralized Audit Log")
+    st.markdown("Reconstructs the multi-turn context from background logs. **Note: Sessions processed with the `x-opt-out-audit: true` privacy header are strictly omitted.**")
+    
+    if df_audit.empty:
+        st.info("No audit logs available. Process traffic without the opt-out header to populate.")
+    else:
+        # Select Session
+        session_ids = df_audit['session_id'].unique()
+        selected_session = st.selectbox("Select a Session ID to replay:", session_ids)
+        
+        # Grab the MOST RECENT row for this session, which contains the complete array 
+        # of all messages sent by the client up to the end of the session context.
+        session_data = df_audit[df_audit['session_id'] == selected_session].iloc[0]
+        
+        # Display Metadata
+        colA, colB, colC = st.columns(3)
+        colA.metric("Application ID", session_data['app_id'])
+        colB.metric("Routing Provider", session_data['provider'].upper())
+        colC.metric("Model Executed", session_data['model_used'])
+        st.divider()
+        
+        # Parse the JSONB message payload
+        try:
+            msg_data = session_data['messages']
+            messages_array = msg_data if isinstance(msg_data, list) else json.loads(msg_data)
+        except Exception as e:
+            st.error(f"Failed to parse message history: {e}")
+            messages_array = []
+            
+        # 1. Render all incoming messages sent by the client (System/User/Assistant history)
+        for msg in messages_array:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            
+            avatar = "👤" if role == "user" else "⚙️" if role == "system" else "🤖"
+            with st.chat_message(role, avatar=avatar):
+                st.markdown(content)
+                
+        # 2. Render the final output produced by the gateway for this specific turn
+        with st.chat_message("assistant", avatar="🛡️"):
+            st.markdown(f"**Gateway Output (Final Turn):**\n\n{session_data['response']}")
