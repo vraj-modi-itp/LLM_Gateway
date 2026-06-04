@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     
     # Ollama variables pointing to local instance and Gemma
     OLLAMA_BASE_URL: str = "http://localhost:11434/v1/chat/completions"
-    OLLAMA_MODEL: str = "gemma:2b"
+    OLLAMA_MODEL: str = "llama3"
 
     model_config = SettingsConfigDict(
         env_file=".env", 

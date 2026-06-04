@@ -139,6 +139,8 @@ async def proxy_chat_completion(
 
     start_time = time.time()
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
+    
+    # --- DYNAMIC CACHE THRESHOLD ---
     cache_threshold = 0.99 if x_request_type.lower() == "agent" else 0.92
     
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
@@ -157,7 +159,28 @@ async def proxy_chat_completion(
             scrubbed_prompt = sanitized_messages[i].content
             break
 
-    score, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
+    # --- 3. PROMPT INTELLIGENCE ENGINE (Categorical Engine Update) ---
+    category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
+    
+    # If the user's prompt is INSUFFICIENT, we intercept and return it immediately without forwarding to main LLMs
+    if category == "INSUFFICIENT":
+        latency_ms = round((time.time() - start_time) * 1000, 2)
+        background_tasks.add_task(
+            log_transaction_and_routing, x_app_id, "INTERCEPTED", "LOCAL_ENGINE", 0, 0, latency_ms, False, "Prompt Rejected: INSUFFICIENT", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
+        )
+        
+        return JSONResponse(
+            content={
+                "id": "chatcmpl-rejected",
+                "object": "chat.completion",
+                "model": payload.model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "Your request lacks context, is too vague, or is repetitive. Please provide a more specific and detailed prompt."}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            },
+            headers={"X-Proxy-Intercepted": "True"}
+        )
+
+    # For NEEDS_CONTEXT or OPTIMAL, replace with enhanced message if applicable
     if is_enhanced and user_prompt_index != -1:
         sanitized_messages[user_prompt_index].content = final_prompt
         
@@ -174,7 +197,7 @@ async def proxy_chat_completion(
         if cached_response:
             latency_ms = round((time.time() - start_time) * 1000, 2)
             background_tasks.add_task(
-                log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, score, is_enhanced, issues
+                log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
             )
             
             with tracer.start_as_current_span("semantic_cache_hit") as span:
@@ -275,7 +298,7 @@ async def proxy_chat_completion(
                     background_tasks.add_task(
                         log_transaction_and_routing, 
                         x_app_id, primary_target, current_provider, prompt_tokens, completion_tokens, latency_ms, False, actual_routing_reason, fallback_used,
-                        scrubbed_prompt, final_prompt, score, is_enhanced, issues
+                        scrubbed_prompt, final_prompt, category, is_enhanced, issues
                     )
 
                     return JSONResponse(
@@ -334,7 +357,7 @@ async def google_native_passthrough(
         pass
 
     is_enhanced = False
-    score = 100.0
+    category = "OPTIMAL" # Default category to replace old score variable
     issues = []
     final_prompt = user_text
     scrubbed_prompt = user_text
@@ -348,7 +371,7 @@ async def google_native_passthrough(
             )
         
         # PROMPT INTELLIGENCE
-        score, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
+        category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
         
         # RE-INJECT SAFE/ENHANCED TEXT
         try:
@@ -364,7 +387,7 @@ async def google_native_passthrough(
         if cached_response:
             latency_ms = round((time.time() - start_time) * 1000, 2)
             background_tasks.add_task(
-                log_transaction_and_routing, x_app_id, "gemini", "gemini", 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, score, is_enhanced, issues
+                log_transaction_and_routing, x_app_id, "gemini", "gemini", 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
             )
             
             # Construct a mock Google Native response from the cached data
@@ -422,7 +445,7 @@ async def google_native_passthrough(
             
             background_tasks.add_task(
                 log_transaction_and_routing, 
-                x_app_id, "gemini", "gemini", prompt_tokens, completion_tokens, latency_ms, False, "Native ADK Passthrough", False, scrubbed_prompt, final_prompt, score, is_enhanced, issues
+                x_app_id, "gemini", "gemini", prompt_tokens, completion_tokens, latency_ms, False, "Native ADK Passthrough", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
             )
 
             return JSONResponse(

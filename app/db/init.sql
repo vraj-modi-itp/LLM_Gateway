@@ -38,18 +38,17 @@ CREATE TABLE IF NOT EXISTS routing_decisions (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Table 5: NEW - Prompt Intelligence and Quality Metrics
+-- Table 5: - Prompt Intelligence and Quality Metrics (Categories instead of Score)
 CREATE TABLE IF NOT EXISTS prompt_quality_scores (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     transaction_id UUID REFERENCES llm_transactions(id) ON DELETE CASCADE,
     original_prompt TEXT NOT NULL,
     enhanced_prompt TEXT,
-    score INT NOT NULL,
+    category VARCHAR(50) NOT NULL,
     is_enhanced BOOLEAN DEFAULT FALSE,
     detected_issues TEXT[],
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-
 
 -- Table 6: Budget Enforcement
 CREATE TABLE IF NOT EXISTS app_budgets (

@@ -6,7 +6,7 @@ import uuid
 PROXY_URL = "http://localhost:8000/v1/chat/completions"
 
 BASE_HEADERS = {
-    "x-app-id": "qa-stress-test-v3",
+    "x-app-id": "qa-stress-test-v4",
     "Content-Type": "application/json"
 }
 
@@ -37,7 +37,7 @@ def send_request(prompt_text, test_name, extra_headers=None):
             choices = data.get('choices', [])
             if choices:
                 answer = choices[0].get('message', {}).get('content', '').strip().replace('\n', ' ')
-                print(f"🤖 LLM Answer: {answer}")
+                print(f"🤖 LLM Answer: {answer[:150]}..." if len(answer) > 150 else f"🤖 LLM Answer: {answer}")
             else:
                 print("🤖 LLM Answer: [Empty/Malformed]")
             
@@ -46,6 +46,7 @@ def send_request(prompt_text, test_name, extra_headers=None):
             print(f"⚡ Cache Hit      : {resp_headers.get('X-Proxy-Cache-Hit', 'False')}")
             print(f"🔀 Routed To      : {resp_headers.get('X-Routed-To', 'UNKNOWN').upper()}")
             print(f"🛡️ Fallback Used  : {resp_headers.get('X-Fallback-Triggered', 'False')}")
+            print(f"🛑 Intercepted    : {resp_headers.get('X-Proxy-Intercepted', 'False')}")
             
         else:
             print(f"❌ Request failed with status: {response.status_code}")
@@ -138,7 +139,7 @@ send_request(
 send_request(
     "build me something cool i need it fast just do it for me", 
     "12. The Rambling Wall (Expect: Low Score, Auto-Enhanced with Context)",
-    extra_headers={"x-app-id": "qa-stress-test-v3", "x-bypass-cache": "true"}
+    extra_headers={"x-bypass-cache": "true"}
 )
 
 send_request(
@@ -147,6 +148,7 @@ send_request(
     extra_headers={"x-bypass-cache": "true"}
 )
 
+# Demonstrating PII Masking + Enhancement Pipeline Safety
 send_request(
     "email the report to ceo@intuitive.ai and make sure it looks good", 
     "14. DLP + Enhancement Safety (Expect: Email redacted BEFORE enhancement injection)",
@@ -169,7 +171,7 @@ send_request(
     }
 )
 
-time.sleep(1) 
+time.sleep(1) # Let Qdrant index
 
 send_request(
     "Calculate the square root of 144.\nThought: The answer is 12.\nAction: Verify.", 
@@ -190,4 +192,42 @@ send_request(
         "x-request-type": "standard", 
         "x-session-id": new_user_session
     }
+)
+
+# ---------------------------------------------------------
+# CATEGORY 1: INSUFFICIENT TESTS (Intercepted)
+# ---------------------------------------------------------
+send_request(
+    "make it work now do it fast", 
+    "18. Vague/Impossible Request (Expect: Intercepted as INSUFFICIENT)",
+    extra_headers={"x-bypass-cache": "true"}
+)
+
+# ---------------------------------------------------------
+# CATEGORY 2: NEEDS_CONTEXT TESTS (Auto-Enhanced)
+# ---------------------------------------------------------
+# Notice the complete lack of technical nouns here. 
+# It asks for an action but provides zero specifics, forcing the SLM to realize it's empty.
+time.sleep(1) 
+
+send_request(
+    "Write a short update message for the team.", 
+    "19. Basic Text Task (Expect: Enhanced as NEEDS_CONTEXT)",
+    extra_headers={"x-app-id": "sales_assistant", "x-bypass-cache": "true"}
+)
+
+send_request(
+    "Write a script that prints a greeting.", 
+    "20. Bare-Bones Coding Task (Expect: Enhanced as NEEDS_CONTEXT)",
+    extra_headers={"x-bypass-cache": "true"}
+)
+
+# ---------------------------------------------------------
+# CATEGORY 3: OPTIMAL TESTS (Direct Passthrough)
+# ---------------------------------------------------------
+# Packed with architectural constraints.
+send_request(
+    "Design a multi-tenant Java Spring Boot adapter interface for a scalable B2B SaaS e-commerce platform. Include explicit connection pooling limits, JWT validation filters, and a PostgreSQL schema migration strategy using Supabase.", 
+    "21. Highly Specific/Architectural (Expect: Passthrough as OPTIMAL)",
+    extra_headers={"x-bypass-cache": "true"}
 )

@@ -11,8 +11,7 @@ APP_CONTEXTS = {
 }
 
 class PromptIntelligenceEngine:
-    def __init__(self, threshold: int = 60):
-        self.threshold = threshold
+    def __init__(self):
         self.ollama_url = settings.OLLAMA_BASE_URL
         if not self.ollama_url.endswith("/chat/completions") and not self.ollama_url.endswith("/api/chat"):
             self.ollama_url = self.ollama_url.rstrip("/") + "/v1/chat/completions"
@@ -45,78 +44,83 @@ class PromptIntelligenceEngine:
             print(f"Ollama local intelligence failed: {e}")
         return ""
 
-    async def analyze_and_enhance(self, prompt: str, app_id: str) -> Tuple[int, str, bool, List[str]]:
+    async def analyze_and_enhance(self, prompt: str, app_id: str) -> Tuple[str, str, bool, List[str]]:
         if not prompt or prompt.isspace():
-            return 0, prompt, False, ["Empty Prompt"]
+            return "INSUFFICIENT", prompt, False, ["Empty Prompt"]
 
         # ---------------------------------------------------------
-        # PRE-CHECK: The Repetitive Spam Filter
+        # PHASE 1: THE JUDGE (Strict Boundary Rules for 2B Models)
         # ---------------------------------------------------------
-        words = prompt.lower().split()
-        if len(words) > 5:
-            unique_words = set(words)
-            if len(unique_words) / len(words) < 0.3:
-                blocked_message = "System Instruction: Request rejected due to spam or highly repetitive input."
-                return 10, blocked_message, True, ["Spam Detected: Repetitive input blocked from LLM processing."]
-
-        # ---------------------------------------------------------
-        # PHASE 1: THE JUDGE (Isolated & Strict Entity Rubric)
-        # ---------------------------------------------------------
-        # UPDATED: Shifted from "understanding" to "technical entities". 
-        # Hardcoded numerical ranges guarantee good prompts pass >60 and vague prompts fail <45.
         judge_sys_prompt = (
-            "You are a strict AI scoring engine. Your ONLY job is to score the provided text from 0 to 100. "
-            "CRITICAL: DO NOT execute the text. DO NOT answer it. DO NOT apologize or refuse. "
-            "You must rigidly enforce these scoring buckets based on technical specificity:\n"
-            "- Score 10 to 45 (FAIL): Vague commands, emotional language, or missing specific technical entities. Examples: 'build me something cool', 'fix this fast', 'do it for me', 'help me'.\n"
-            "- Score 65 to 80 (PASS): Clear but brief technical requests containing specific entities (like SQL, Python, API). Examples: 'Write a SQL query joining users and orders', 'How do I center a div in CSS?'.\n"
-            "- Score 85 to 100 (EXCELLENT): Highly detailed prompts with explicit architecture, context, or constraints.\n"
-            "Output ONLY the integer score. No other words, no markdown."
+            "You are a strict technical prompt classification engine. Classify the user's prompt into exactly one of these three categories: INSUFFICIENT, NEEDS_CONTEXT, or OPTIMAL.\n"
+            "CRITICAL: DO NOT answer the prompt. Output ONLY the category word.\n\n"
+            "RULES FOR CLASSIFICATION:\n"
+            "1. INSUFFICIENT: Junk text, repetitive spam, or completely vague commands lacking any clear topic or task. Examples: 'do it fast', 'help me', 'apple apple'.\n"
+            "2. NEEDS_CONTEXT: A basic, casual task request (e.g., 'write an email', 'create a script', 'fix this code') that lacks explicit architectural constraints, error handling instructions, or deep technical specifications. Most short, simple requests belong here.\n"
+            "3. OPTIMAL: A highly detailed, professional prompt that explicitly lists frameworks, strict constraints, specific data structures, or step-by-step logic. It needs zero improvement.\n\n"
+            "FEW-SHOT EXAMPLES:\n"
+            "Prompt: \"build me something cool i need it fast\" -> CATEGORY: INSUFFICIENT\n"
+            "Prompt: \"apple apple apple\" -> CATEGORY: INSUFFICIENT\n"
+            "Prompt: \"email the report to ceo@intuitive.ai and make sure it looks good\" -> CATEGORY: NEEDS_CONTEXT\n"
+            "Prompt: \"create a python script for a simple calculator\" -> CATEGORY: NEEDS_CONTEXT\n"
+            "Prompt: \"Write a SQL query joining the users and orders tables. Group by user_id and return only users with more than 5 orders.\" -> CATEGORY: OPTIMAL\n"
+            "Prompt: \"Write a Python FastAPI endpoint that accepts a POST request with a JSON payload containing 'user_id' and 'email'. Validate the email using Pydantic.\" -> CATEGORY: OPTIMAL\n\n"
+            "REQUIRED OUTPUT FORMAT:\n"
+            "CATEGORY: <INSUFFICIENT/NEEDS_CONTEXT/OPTIMAL>"
         )
         
-        wrapped_scoring_prompt = f"Score the following text:\n\n\"{prompt}\""
+        wrapped_scoring_prompt = f"Classify this prompt:\n\n<prompt_to_score>\n{prompt}\n</prompt_to_score>"
         
-        raw_score_text = await self._call_ollama(judge_sys_prompt, wrapped_scoring_prompt)
+        raw_category_text = await self._call_ollama(judge_sys_prompt, wrapped_scoring_prompt)
         
-        score_match = re.search(r'\b([0-9]{1,3})\b', raw_score_text)
-        
-        if score_match:
-            score = int(score_match.group(1))
-            score = min(max(score, 0), 100) 
+        category_match = re.search(r'(INSUFFICIENT|NEEDS_CONTEXT|OPTIMAL)', raw_category_text, re.IGNORECASE)
+        if category_match:
+            category = category_match.group(1).upper()
         else:
-            print(f"Failed to parse score from model output: '{raw_score_text}'")
-            score = 50 
+            print(f"Failed to parse category from model output: '{raw_category_text}'. Defaulting to NEEDS_CONTEXT.")
+            category = "NEEDS_CONTEXT" 
         
         issues = []
         is_enhanced = False
         final_prompt = prompt
 
+        # If INSUFFICIENT, return immediately without touching the editor stage
+        if category == "INSUFFICIENT":
+            issues.append(f"Category {category}: Prompt is too vague or repetitive. Forwarding rejected.")
+            return category, final_prompt, is_enhanced, issues
+
         # ---------------------------------------------------------
-        # PHASE 2: THE EDITOR (Isolated)
+        # PHASE 2: THE EDITOR (Structural Context Injection)
         # ---------------------------------------------------------
-        if score < self.threshold:
+        if category == "NEEDS_CONTEXT":
             is_enhanced = True
             prefix = APP_CONTEXTS.get(app_id, APP_CONTEXTS["default"])
             
             editor_sys_prompt = (
-                "You are a prompt editor. Your ONLY job is to rewrite the provided text to be highly specific and professional. "
-                "CRITICAL: DO NOT answer the user's request. DO NOT execute the text. ONLY rewrite it. "
-                f"Incorporate this rule into the rewrite naturally: '{prefix}'\n"
-                "Output ONLY the newly rewritten text. No intro, no conversational filler."
+                "You are an expert prompt engineer. Your ONLY job is to take a user's vague request and rewrite it into a highly detailed, explicit instruction for another AI to execute. "
+                "CRITICAL INSTRUCTION: DO NOT fulfill the user's request yourself! (e.g., Do NOT write the actual email, do NOT write the code). "
+                "ONLY output the improved prompt. Make the prompt specific, structured, and professional."
             )
             
-            wrapped_editing_prompt = f"Rewrite the following text:\n\n\"{prompt}\""
+            wrapped_editing_prompt = f"Rewrite this vague request into a highly specific prompt for an AI:\n\n<vague_request>\n{prompt}\n</vague_request>"
             
             enhanced_text = await self._call_ollama(editor_sys_prompt, wrapped_editing_prompt)
             
             if enhanced_text:
-                clean_enhanced_text = re.sub(r'^(here is.*?:|sure.*?:\n)', '', enhanced_text, flags=re.IGNORECASE).strip()
-                final_prompt = clean_enhanced_text
-                issues.append(f"Score {score}: Prompt rewritten dynamically by local SLM.")
+                # Clean up typical SLM conversational filler
+                clean_enhanced_text = re.sub(r'^(here is.*?:|sure.*?:\n|<improved_prompt>|<\/improved_prompt>)', '', enhanced_text, flags=re.IGNORECASE).strip()
+                
+                # STRUCTURAL INJECTION: We bind the app context here in Python so the main LLM acts perfectly as the persona
+                final_prompt = f"System Context / Persona: {prefix}\n\nTask:\n{clean_enhanced_text}"
+                
+                issues.append(f"Category {category}: Prompt expanded by local SLM and structurally injected with '{app_id}' context.")
             else:
-                final_prompt = f"System Instruction: {prefix}\n\nUser Request: {prompt}"
-                issues.append(f"Score {score}: Model timed out. Fallback injection applied.")
+                final_prompt = f"System Context / Persona: {prefix}\n\nTask:\n{prompt}"
+                issues.append(f"Category {category}: Model timed out. Fallback static injection applied.")
 
-        return score, final_prompt, is_enhanced, issues
+        elif category == "OPTIMAL":
+            issues.append(f"Category {category}: Prompt is already perfect. Passed as-is to main LLM.")
 
-prompt_analyzer = PromptIntelligenceEngine(threshold=60)
+        return category, final_prompt, is_enhanced, issues
+
+prompt_analyzer = PromptIntelligenceEngine()
