@@ -17,6 +17,7 @@ from app.services.cache import semantic_cache
 from app.services.telemetry import log_transaction_and_routing, log_security_alert
 from app.services.prompt_analyzer import prompt_analyzer
 from app.services.budget import budget_service
+from app.services.audit import audit_service  # Added teammate's new audit service
 
 router = APIRouter(prefix="/v1")
 google_native_router = APIRouter()
@@ -119,9 +120,13 @@ async def proxy_chat_completion(
     x_app_id: str = Header(..., description="Internal app identifier"),
     x_bypass_cache: str = Header("false", description="Skip caching"),
     x_session_id: str = Header(None, description="Unique session ID for agent loop isolation"),
-    x_request_type: str = Header("standard", description="Traffic classifier: standard or agent")
+    x_request_type: str = Header("standard", description="Traffic classifier: standard or agent"),
+    x_opt_out_audit: str = Header("false", description="Opt out of audit logging")
 ):
     tracer = trace.get_tracer("ai-proxy-gateway")
+    
+    # Process the opt-out flag securely (From teammate's PR)
+    opt_out_audit = x_opt_out_audit.lower() in ["true", "1", "yes"]
     
     if not budget_service.is_allowed(x_app_id):
         with tracer.start_as_current_span("blocked_by_gateway_guardrail") as span:
@@ -301,6 +306,20 @@ async def proxy_chat_completion(
                         scrubbed_prompt, final_prompt, category, is_enhanced, issues
                     )
 
+                    # --- PATH A STATELESS AUDIT LOGGING (NETWORK HIT) ---
+                    if not opt_out_audit:  # Ensure Privacy Header is respected
+                        background_tasks.add_task(
+                            audit_service.log_interaction,
+                            session_id=x_session_id or "stateless-session",
+                            app_id=x_app_id,
+                            provider=current_provider,
+                            model_used=temp_payload["model"],
+                            messages=payload.model_dump()["messages"],
+                            response_text=assistant_text,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens
+                        )
+
                     return JSONResponse(
                         content=response_json,
                         status_code=response.status_code,
@@ -329,8 +348,12 @@ async def google_native_passthrough(
     x_app_id: str = Header("adk-default-app", description="Internal app identifier"),
     x_bypass_cache: str = Header("false", description="Skip caching"),
     x_session_id: str = Header(None, description="Unique session ID for agent loop isolation"),
-    x_request_type: str = Header("standard", description="Traffic classifier: standard or agent")
+    x_request_type: str = Header("standard", description="Traffic classifier: standard or agent"),
+    x_opt_out_audit: str = Header("false", description="Opt out of audit logging")
 ):
+    # Process the opt-out flag securely
+    opt_out_audit = x_opt_out_audit.lower() in ["true", "1", "yes"]
+    
     if not budget_service.is_allowed(x_app_id):
         background_tasks.add_task(
             log_security_alert, x_app_id, "RATE_LIMIT_OR_BUDGET", 
@@ -380,7 +403,6 @@ async def google_native_passthrough(
             pass
 
     # --- 2. CACHE CHECK ---
-    # We construct a dummy OpenAI format message just to query our Qdrant vector DB
     dummy_messages = [ChatMessage(role="user", content=final_prompt)] if final_prompt else []    
     if not bypass_cache and dummy_messages:
         cached_response = semantic_cache.query_cache(messages=dummy_messages, threshold=cache_threshold, session_id=x_session_id)
@@ -390,7 +412,6 @@ async def google_native_passthrough(
                 log_transaction_and_routing, x_app_id, "gemini", "gemini", 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
             )
             
-            # Construct a mock Google Native response from the cached data
             mock_native_response = {
                 "candidates": [
                     {
@@ -439,7 +460,6 @@ async def google_native_passthrough(
                     except Exception:
                         pass
                 
-                # Save the new response into the Semantic Cache
                 if not bypass_cache and dummy_messages:
                     semantic_cache.update_cache(dummy_messages, assistant_text, session_id=x_session_id)
             
@@ -447,6 +467,23 @@ async def google_native_passthrough(
                 log_transaction_and_routing, 
                 x_app_id, "gemini", "gemini", prompt_tokens, completion_tokens, latency_ms, False, "Native ADK Passthrough", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
             )
+
+            # --- STATLESS AUDIT LOGGING FOR NATIVE ROUTE ---
+            if not opt_out_audit and dummy_messages: 
+                # Convert the dummy ChatMessage object to a dict to match what the audit_service expects
+                audit_messages = [{"role": msg.role, "content": msg.content} for msg in dummy_messages]
+                
+                background_tasks.add_task(
+                    audit_service.log_interaction,
+                    session_id=x_session_id or "stateless-session",
+                    app_id=x_app_id,
+                    provider="gemini",
+                    model_used=full_model_path,
+                    messages=audit_messages,
+                    response_text=assistant_text if raw_assistant_text else "",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens
+                )
 
             return JSONResponse(
                 content=response_json,
