@@ -17,8 +17,6 @@ from app.services.cache import semantic_cache
 from app.services.telemetry import log_transaction_and_routing, log_security_alert
 from app.services.prompt_analyzer import prompt_analyzer
 from app.services.budget import budget_service
-
-# NEW: Import the flag resolver
 from app.services.flag_resolver import resolve_pi_enabled
 
 # --- Path A Audit Logging Service ---
@@ -132,7 +130,9 @@ async def proxy_chat_completion(
     x_bypass_cache: str = Header("false", description="Skip caching"),
     x_session_id: str = Header(None, description="Unique session ID for agent loop isolation"),
     x_request_type: str = Header("standard", description="Traffic classifier: standard or agent"),
-    x_opt_out_audit: str = Header("false", description="Privacy flag to skip chat history logging") # NEW: Privacy Opt-Out Header
+    x_opt_out_audit: str = Header("false", description="Privacy flag to skip chat history logging"),
+    x_force_provider: str = Header(None, description="Explicitly force a provider (e.g., groq, gemini)"),
+    x_force_model: str = Header(None, description="Explicitly force a specific model string")
 ):
     tracer = trace.get_tracer("ai-proxy-gateway")
     
@@ -212,7 +212,18 @@ async def proxy_chat_completion(
         
     payload.messages = sanitized_messages
 
-    primary_target, routing_reason = intent_classifier.classify(final_prompt, semantic_cache.embedding_model)
+    # --- 4. EXPLICIT ROUTING OVERRIDE VS SEMANTIC ROUTING ---
+    if x_force_provider:
+        primary_target = x_force_provider.lower()
+        routing_reason = f"Explicit Header Override ({primary_target})"
+        
+        if primary_target not in PROVIDER_URLS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid forced provider '{primary_target}'. Valid options are: {list(PROVIDER_URLS.keys())}"
+            )
+    else:
+        primary_target, routing_reason = intent_classifier.classify(final_prompt, semantic_cache.embedding_model)
 
     if not bypass_cache:
         cached_response = semantic_cache.query_cache(
@@ -229,7 +240,7 @@ async def proxy_chat_completion(
             )
             
             # --- PATH A STATELESS AUDIT LOGGING (CACHE HIT) ---
-            if not opt_out_audit:  # Ensure Privacy Header is respected
+            if not opt_out_audit:
                 background_tasks.add_task(
                     audit_service.log_interaction,
                     session_id=x_session_id or "stateless-session",
@@ -275,12 +286,18 @@ async def proxy_chat_completion(
         current_timeout = PROVIDER_TIMEOUTS.get(current_provider, 30.0)
         
         temp_payload = payload.model_dump()
-        if current_provider == "ollama":
-            temp_payload["model"] = settings.OLLAMA_MODEL
-        elif current_provider == "groq":
-            temp_payload["model"] = "llama-3.1-8b-instant" 
-        elif current_provider == "gemini":
-            temp_payload["model"] = "gemini-1.5-flash"
+        
+        # --- 5. EXPLICIT MODEL INJECTION ---
+        if x_force_model:
+            temp_payload["model"] = x_force_model
+        else:
+            # Default model fallbacks if no header is provided
+            if current_provider == "ollama":
+                temp_payload["model"] = settings.OLLAMA_MODEL
+            elif current_provider == "groq":
+                temp_payload["model"] = "llama-3.1-8b-instant" 
+            elif current_provider == "gemini":
+                temp_payload["model"] = "gemini-1.5-flash"
 
         if fallback_used:
             actual_routing_reason = f"Fallback trigger (Original target: {primary_target})"
@@ -346,7 +363,7 @@ async def proxy_chat_completion(
                     )
 
                     # --- PATH A STATELESS AUDIT LOGGING (NETWORK HIT) ---
-                    if not opt_out_audit:  # Ensure Privacy Header is respected
+                    if not opt_out_audit:
                         background_tasks.add_task(
                             audit_service.log_interaction,
                             session_id=x_session_id or "stateless-session",
@@ -419,7 +436,7 @@ async def google_native_passthrough(
         pass
 
     is_enhanced = False
-    category = "SKIPPED" # Default category to replace old score variable
+    category = "SKIPPED" 
     issues = []
     final_prompt = user_text
     scrubbed_prompt = user_text
@@ -521,7 +538,6 @@ async def google_native_passthrough(
 
             # --- STATLESS AUDIT LOGGING FOR NATIVE ROUTE ---
             if not opt_out_audit and dummy_messages: 
-                # Convert the dummy ChatMessage object to a dict to match what the audit_service expects
                 audit_messages = [{"role": msg.role, "content": msg.content} for msg in dummy_messages]
                 
                 background_tasks.add_task(
