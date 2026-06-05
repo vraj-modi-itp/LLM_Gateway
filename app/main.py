@@ -31,6 +31,7 @@ tracer = get_tracer()
 # ---------------------------------------------------------
 from app.core.config import settings
 from app.api.router import router as api_router, google_native_router
+from app.api.admin_router import admin_router # NEW: Import the admin flags router
 from app.services.cache import semantic_cache
 from app.services.telemetry import refresh_provider_metrics
 from app.services.budget import budget_service
@@ -99,6 +100,7 @@ async def log_and_trace_requests(request: Request, call_next):
 
 app.include_router(api_router)
 app.include_router(google_native_router)
+app.include_router(admin_router) # NEW: Register the admin flags router
 
 @app.get("/health")
 async def health_check():

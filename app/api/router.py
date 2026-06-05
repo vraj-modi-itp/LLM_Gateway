@@ -18,6 +18,9 @@ from app.services.telemetry import log_transaction_and_routing, log_security_ale
 from app.services.prompt_analyzer import prompt_analyzer
 from app.services.budget import budget_service
 
+# NEW: Import the flag resolver
+from app.services.flag_resolver import resolve_pi_enabled
+
 # --- Path A Audit Logging Service ---
 try:
     from app.services.audit_service import audit_service
@@ -173,30 +176,39 @@ async def proxy_chat_completion(
             scrubbed_prompt = sanitized_messages[i].content
             break
 
-    # --- 3. PROMPT INTELLIGENCE ENGINE (Categorical Engine Update) ---
-    category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
-    
-    # If the user's prompt is INSUFFICIENT, intercept and return immediately
-    if category == "INSUFFICIENT":
-        latency_ms = round((time.time() - start_time) * 1000, 2)
-        background_tasks.add_task(
-            log_transaction_and_routing, x_app_id, "INTERCEPTED", "LOCAL_ENGINE", 0, 0, latency_ms, False, "Prompt Rejected: INSUFFICIENT", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
-        )
-        
-        return JSONResponse(
-            content={
-                "id": "chatcmpl-rejected",
-                "object": "chat.completion",
-                "model": payload.model,
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": "Your request lacks context, is too vague, or is repetitive. Please provide a more specific and detailed prompt."}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            },
-            headers={"X-Proxy-Intercepted": "True"}
-        )
+    # --- 3. DYNAMIC PROMPT INTELLIGENCE FLAG CHECK ---
+    pi_should_run = await resolve_pi_enabled(x_app_id)
 
-    # For NEEDS_CONTEXT or OPTIMAL, replace with enhanced message if applicable
-    if is_enhanced and user_prompt_index != -1:
-        sanitized_messages[user_prompt_index].content = final_prompt
+    if pi_should_run:
+        category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
+        
+        # If the user's prompt is INSUFFICIENT, intercept and return immediately
+        if category == "INSUFFICIENT":
+            latency_ms = round((time.time() - start_time) * 1000, 2)
+            background_tasks.add_task(
+                log_transaction_and_routing, x_app_id, "INTERCEPTED", "LOCAL_ENGINE", 0, 0, latency_ms, False, "Prompt Rejected: INSUFFICIENT", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
+            )
+            
+            return JSONResponse(
+                content={
+                    "id": "chatcmpl-rejected",
+                    "object": "chat.completion",
+                    "model": payload.model,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "Your request lacks context, is too vague, or is repetitive. Please provide a more specific and detailed prompt."}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                },
+                headers={"X-Proxy-Intercepted": "True"}
+            )
+
+        # For NEEDS_CONTEXT or OPTIMAL, replace with enhanced message if applicable
+        if is_enhanced and user_prompt_index != -1:
+            sanitized_messages[user_prompt_index].content = final_prompt
+    else:
+        # BYPASS PI ENGINE: Pass through the DLP-scrubbed prompt untouched
+        final_prompt = scrubbed_prompt
+        category = "SKIPPED"
+        is_enhanced = False
+        issues = []
         
     payload.messages = sanitized_messages
 
@@ -407,7 +419,7 @@ async def google_native_passthrough(
         pass
 
     is_enhanced = False
-    category = "OPTIMAL" # Default category to replace old score variable
+    category = "SKIPPED" # Default category to replace old score variable
     issues = []
     final_prompt = user_text
     scrubbed_prompt = user_text
@@ -420,14 +432,26 @@ async def google_native_passthrough(
                 log_security_alert, x_app_id, "DLP_INGRESS_INTERCEPT", "Blocked sensitive PII in native Google payload."
             )
         
-        # PROMPT INTELLIGENCE
-        category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
-        
-        # RE-INJECT SAFE/ENHANCED TEXT
-        try:
-            raw_payload["contents"][-1]["parts"][0]["text"] = final_prompt
-        except Exception:
-            pass
+        # DYNAMIC PROMPT INTELLIGENCE FLAG CHECK
+        pi_should_run = await resolve_pi_enabled(x_app_id)
+
+        if pi_should_run:
+            # PROMPT INTELLIGENCE
+            category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
+            
+            # RE-INJECT SAFE/ENHANCED TEXT
+            try:
+                raw_payload["contents"][-1]["parts"][0]["text"] = final_prompt
+            except Exception:
+                pass
+        else:
+            final_prompt = scrubbed_prompt
+            category = "SKIPPED"
+            # RE-INJECT DLP SCRUBBED TEXT
+            try:
+                raw_payload["contents"][-1]["parts"][0]["text"] = scrubbed_prompt
+            except Exception:
+                pass
 
     # --- 2. CACHE CHECK ---
     dummy_messages = [ChatMessage(role="user", content=final_prompt)] if final_prompt else []    

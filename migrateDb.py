@@ -12,6 +12,7 @@ async def setup_database():
     conn = await asyncpg.connect(DB_DSN)
     
     try:
+        # --- EXISTING TABLES ---
         print("🏗️ Creating 'audit_chat_history' table...")
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS audit_chat_history (
@@ -28,13 +29,46 @@ async def setup_database():
             );
         """)
         
-        print("🏗️ Creating indexes for 'audit_chat_history'...")
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_audit_session ON audit_chat_history(session_id);
             CREATE INDEX IF NOT EXISTS idx_audit_app ON audit_chat_history(app_id);
         """)
+
+        # --- NEW CHANGE 1 TABLES & COLUMNS ---
+        print("🏗️ Creating 'gateway_feature_flags' table...")
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS gateway_feature_flags (
+                flag_name VARCHAR(100) PRIMARY KEY,
+                is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                description TEXT,
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_by VARCHAR(100) DEFAULT 'system'
+            );
+        """)
         
-        print("✅ Database migration complete! Audit table is ready.")
+        print("🌱 Seeding Prompt Intelligence Master Switch...")
+        await conn.execute("""
+            INSERT INTO gateway_feature_flags (flag_name, is_enabled, description)
+            VALUES ('prompt_intelligence_enabled', TRUE, 
+                    'Global master switch for Prompt Intelligence Engine. When FALSE, all apps skip PI regardless of per-app setting.')
+            ON CONFLICT (flag_name) DO NOTHING;
+        """)
+
+        print("🏗️ Modifying 'app_budgets' table with PI override flag...")
+        await conn.execute("""
+            ALTER TABLE app_budgets
+            ADD COLUMN IF NOT EXISTS pi_enabled BOOLEAN DEFAULT NULL;
+        """)
+
+        print("🏗️ Modifying 'llm_transactions' table with telemetry tracking...")
+        # Note: Fails silently if llm_transactions doesn't exist yet, but ensures schema safety
+        await conn.execute("""
+            ALTER TABLE llm_transactions
+            ADD COLUMN IF NOT EXISTS pi_was_run BOOLEAN DEFAULT TRUE,
+            ADD COLUMN IF NOT EXISTS pi_category VARCHAR(20) DEFAULT NULL;
+        """)
+        
+        print("✅ Database migration complete! Audit and Feature Flag tables are ready.")
         
     except Exception as e:
         print(f"❌ Error creating tables: {e}")
