@@ -17,7 +17,6 @@ from app.services.cache import semantic_cache
 from app.services.telemetry import log_transaction_and_routing, log_security_alert
 from app.services.prompt_analyzer import prompt_analyzer
 from app.services.budget import budget_service
-from app.services.audit import audit_service  # Added teammate's new audit service
 
 # --- Path A Audit Logging Service ---
 try:
@@ -156,7 +155,7 @@ async def proxy_chat_completion(
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
     
     # --- DYNAMIC CACHE THRESHOLD ---
-    cache_threshold = 0.99 if x_request_type.lower() == "agent" else 0.92
+    cache_threshold = 0.99 if x_request_type.lower() == "agent" else 0.92   
     
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
     
@@ -393,7 +392,7 @@ async def google_native_passthrough(
     raw_payload = await request.json()
     target_url = f"https://generativelanguage.googleapis.com/{api_version}/models/{full_model_path}"
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
-    cache_threshold = 0.99 if x_request_type.lower() == "agent" else 0.92
+    cache_threshold = 0.90 if x_request_type.lower() == "agent" else 0.92
     
     headers = {
         "Content-Type": "application/json",
