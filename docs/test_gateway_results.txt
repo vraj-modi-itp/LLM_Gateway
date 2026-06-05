@@ -1,0 +1,16 @@
+(.venv) PS C:\Users\SumitMishra(CloudPla\Codespace\LLM_Gateway\tests> python .\test_gateway.py
+
+🚀 Test 1: Baseline (PI Engine Active)
+⏱️ Latency        : 127195.95 ms
+🔀 Routed To      : GROQ
+
+[!] ADMIN ACTION: Setting Prompt Intelligence ENABLED = False
+⏳ Waiting 32 seconds for TTL Cache to expire...
+
+🚀 Test 2: Bypassed (PI Engine Disabled)
+⏱️ Latency        : 2927.15 ms
+🔀 Routed To      : GROQ
+
+[!] ADMIN ACTION: Setting Prompt Intelligence ENABLED = True
+✅ Test complete. PI Engine restored to normal.
+(.venv) PS C:\Users\SumitMishra(CloudPla\Codespace\LLM_Gateway\tests> 

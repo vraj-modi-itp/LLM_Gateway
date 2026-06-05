@@ -1,0 +1,35 @@
+(.venv) PS C:\Users\SumitMishra(CloudPla\Codespace\LLM_Gateway\tests> python .\test_explicit_routing.py
+
+============================================================
+🚀 RUNNING TEST: 1. Baseline Semantic Routing
+============================================================
+✅ Success (98862.32ms)
+🔀 Routed To  : OLLAMA
+🧠 Model Used : llama3
+🤖 Response   : The capital of France is Paris....
+
+============================================================
+🚀 RUNNING TEST: 2. Explicit Override -> Groq (llama-3.1-8b-instant)
+============================================================
+📝 Injecting Headers: {'x-force-provider': 'groq', 'x-force-model': 'llama-3.1-8b-instant'}
+✅ Success (2950.1ms)
+🔀 Routed To  : GROQ
+🧠 Model Used : llama-3.1-8b-instant
+🤖 Response   : The capital of France is Paris....
+
+============================================================
+🚀 RUNNING TEST: 3. Explicit Override -> Gemini (gemini-1.5-flash)
+============================================================
+📝 Injecting Headers: {'x-force-provider': 'gemini', 'x-force-model': 'gemini-3.1-flash-lite'}
+✅ Success (4301.39ms)
+🔀 Routed To  : GEMINI
+🧠 Model Used : gemini-3.1-flash-lite
+🤖 Response   : To write a "Hello, World!" script in Python, you only need one line of code.  ### The Script Create ...
+
+============================================================
+🚀 RUNNING TEST: 4. Error Handling -> Invalid Provider Name
+============================================================
+📝 Injecting Headers: {'x-force-provider': 'anthropic', 'x-force-model': 'claude-3-haiku'}
+❌ Failed with Status: 400 (2344.06ms)
+🔍 Error Details: {"detail":"Invalid forced provider 'anthropic'. Valid options are: ['groq', 'gemini', 'ollama']"}
+(.venv) PS C:\Users\SumitMishra(CloudPla\Codespace\LLM_Gateway\tests> 
