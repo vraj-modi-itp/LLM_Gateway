@@ -1,16 +1,17 @@
 import streamlit as st
 import pandas as pd
-import psycopg2
 import json
+from sqlalchemy import create_engine
 
 st.set_page_config(page_title="LLM Proxy Dashboard", layout="wide")
 
+# --- SQLALCHEMY ENGINE SETUP ---
 @st.cache_resource
-def get_db_connection():
-    # Connects to our local PostgreSQL Docker container on port 5433
-    return psycopg2.connect("postgresql://proxy_user:proxy_password@localhost:5433/proxy_db")
+def get_db_engine():
+    # Creates a reusable SQLAlchemy engine pointing to your local Docker container
+    return create_engine("postgresql://proxy_user:proxy_password@localhost:5433/proxy_db")
 
-conn = get_db_connection()
+engine = get_db_engine()
 
 st.title("🛡️ AI Proxy Governance & Analytics")
 st.markdown("Live telemetry, cost enforcement, and security monitoring for internal LLM traffic.")
@@ -22,7 +23,7 @@ st.divider()
 def load_data():
     # 1. Standard Telemetry
     try:
-        df_tx = pd.read_sql("SELECT * FROM llm_transactions ORDER BY created_at DESC", conn)
+        df_tx = pd.read_sql("SELECT * FROM llm_transactions ORDER BY created_at DESC", engine)
         if not df_tx.empty:
             df_tx['cost_usd'] = df_tx['cost_usd'].astype(float) 
     except:
@@ -35,25 +36,25 @@ def load_data():
             FROM prompt_quality_scores p
             JOIN llm_transactions t ON p.transaction_id = t.id
             ORDER BY t.created_at DESC
-        """, conn)
+        """, engine)
     except:
         df_quality = pd.DataFrame()
 
     # 3. App Budgets (Active Governance)
     try:
-        df_budgets = pd.read_sql("SELECT * FROM app_budgets ORDER BY current_month_cost DESC", conn)
+        df_budgets = pd.read_sql("SELECT * FROM app_budgets ORDER BY current_month_cost DESC", engine)
     except:
         df_budgets = pd.DataFrame()
 
     # 4. Instant Anomaly & Security Alerts
     try:
-        df_alerts = pd.read_sql("SELECT * FROM alerts ORDER BY fired_at DESC LIMIT 50", conn)
+        df_alerts = pd.read_sql("SELECT * FROM alerts ORDER BY fired_at DESC LIMIT 50", engine)
     except:
         df_alerts = pd.DataFrame()
 
     # 5. NEW: Audit Chat History
     try:
-        df_audit = pd.read_sql("SELECT * FROM audit_chat_history ORDER BY created_at DESC LIMIT 200", conn)
+        df_audit = pd.read_sql("SELECT * FROM audit_chat_history ORDER BY created_at DESC LIMIT 200", engine)
     except:
         df_audit = pd.DataFrame()
 
