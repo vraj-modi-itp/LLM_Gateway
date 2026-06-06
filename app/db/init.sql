@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS llm_transactions (
     latency_ms FLOAT,
     cost_usd FLOAT DEFAULT 0.0,
     is_cached BOOLEAN DEFAULT FALSE,
+    pi_was_run BOOLEAN DEFAULT TRUE,       -- ADDED
+    pi_category VARCHAR(20) DEFAULT NULL,  -- ADDED
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -58,6 +60,7 @@ CREATE TABLE IF NOT EXISTS app_budgets (
     current_month_tokens INT DEFAULT 0,
     current_month_cost FLOAT DEFAULT 0.0,
     is_blocked BOOLEAN DEFAULT FALSE,
+    pi_enabled BOOLEAN DEFAULT NULL,      -- ADDED
     last_reset_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -70,6 +73,31 @@ CREATE TABLE IF NOT EXISTS alerts (
     fired_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     acknowledged BOOLEAN DEFAULT FALSE
 );
+
+-- Table 8: Feature Flags for Prompt Intelligence
+CREATE TABLE IF NOT EXISTS gateway_feature_flags (
+    flag_name VARCHAR(100) PRIMARY KEY,
+    is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    description TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_by VARCHAR(100) DEFAULT 'system'
+);
+
+INSERT INTO gateway_feature_flags (flag_name, is_enabled, description)
+VALUES ('prompt_intelligence_enabled', TRUE, 'Global master switch')
+ON CONFLICT (flag_name) DO NOTHING;
+
+-- Table 9: Dynamic Blacklist for Background Learning
+CREATE TABLE IF NOT EXISTS dynamic_blacklist (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    original_word VARCHAR(255) UNIQUE NOT NULL,
+    mask_tag VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+INSERT INTO dynamic_blacklist (original_word, mask_tag) 
+VALUES ('Intuitive.AI', '[COMPANY_NAME]') 
+ON CONFLICT DO NOTHING;
 
 -- Audit table to capture stateless chat history across applications
 CREATE TABLE IF NOT EXISTS audit_chat_history (

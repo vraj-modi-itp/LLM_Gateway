@@ -41,9 +41,16 @@ async def lifespan(app: FastAPI):
     gateway_log.info("Loading local embedding model and connecting to Qdrant...")
     semantic_cache.initialize()
     
+    # NEW: Initialize the Prompt Intelligence engine (loads centroids and fast-map)
+    from app.services.prompt_analyzer import prompt_analyzer
+    await prompt_analyzer.initialize()
+    
     # Start background loops
     asyncio.create_task(refresh_provider_metrics())
     asyncio.create_task(budget_service.sync_budgets_loop())
+    
+    # NEW: Start the background LLM worker for blacklisting and enhancements
+    asyncio.create_task(prompt_analyzer.background_worker_loop())
     
     gateway_log.info("Infrastructure engines fully initialized! Ready for traffic.")
     yield

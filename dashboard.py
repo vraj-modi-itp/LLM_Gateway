@@ -8,20 +8,17 @@ st.set_page_config(page_title="LLM Proxy Dashboard", layout="wide")
 # --- SQLALCHEMY ENGINE SETUP ---
 @st.cache_resource
 def get_db_engine():
-    # Creates a reusable SQLAlchemy engine pointing to your local Docker container
     return create_engine("postgresql://proxy_user:proxy_password@localhost:5433/proxy_db")
 
 engine = get_db_engine()
 
 st.title("🛡️ AI Proxy Governance & Analytics")
-st.markdown("Live telemetry, cost enforcement, and security monitoring for internal LLM traffic.")
+st.markdown("Live telemetry, active governance, and asynchronous background intelligence.")
 st.divider()
 
 # --- FETCH DATA ---
-# ttl=2 means Streamlit will refresh the data every 2 seconds if the user interacts with the page
 @st.cache_data(ttl=2)
 def load_data():
-    # 1. Standard Telemetry
     try:
         df_tx = pd.read_sql("SELECT * FROM llm_transactions ORDER BY created_at DESC", engine)
         if not df_tx.empty:
@@ -29,46 +26,47 @@ def load_data():
     except:
         df_tx = pd.DataFrame()
 
-    # 2. Prompt Quality (Updated for Category Logic)
     try:
         df_quality = pd.read_sql("""
-            SELECT t.app_id, t.created_at, p.original_prompt, p.enhanced_prompt, p.category, p.is_enhanced, p.detected_issues 
+            SELECT t.app_id, COALESCE(t.created_at, p.created_at) as created_at, 
+                   p.original_prompt, p.enhanced_prompt, p.category, p.is_enhanced, p.detected_issues 
             FROM prompt_quality_scores p
-            JOIN llm_transactions t ON p.transaction_id = t.id
-            ORDER BY t.created_at DESC
+            LEFT JOIN llm_transactions t ON p.transaction_id = t.id
+            ORDER BY COALESCE(t.created_at, p.created_at) DESC
         """, engine)
     except:
         df_quality = pd.DataFrame()
 
-    # 3. App Budgets (Active Governance)
     try:
         df_budgets = pd.read_sql("SELECT * FROM app_budgets ORDER BY current_month_cost DESC", engine)
     except:
         df_budgets = pd.DataFrame()
 
-    # 4. Instant Anomaly & Security Alerts
     try:
         df_alerts = pd.read_sql("SELECT * FROM alerts ORDER BY fired_at DESC LIMIT 50", engine)
     except:
         df_alerts = pd.DataFrame()
 
-    # 5. NEW: Audit Chat History
     try:
         df_audit = pd.read_sql("SELECT * FROM audit_chat_history ORDER BY created_at DESC LIMIT 200", engine)
     except:
         df_audit = pd.DataFrame()
 
-    return df_tx, df_quality, df_budgets, df_alerts, df_audit
+    try:
+        df_blacklist = pd.read_sql("SELECT * FROM dynamic_blacklist ORDER BY created_at DESC", engine)
+    except:
+        df_blacklist = pd.DataFrame()
 
-df, df_quality, df_budgets, df_alerts, df_audit = load_data()
+    return df_tx, df_quality, df_budgets, df_alerts, df_audit, df_blacklist
+
+df, df_quality, df_budgets, df_alerts, df_audit, df_blacklist = load_data()
 
 if df.empty and df_alerts.empty and df_audit.empty:
     st.info("No LLM transactions, alerts, or audit logs recorded yet. Run your test scripts to generate traffic!")
     st.stop()
 
 # --- TABBED LAYOUT ---
-# Added Tab 4 for the Session Explorer
-tab1, tab2, tab3, tab4 = st.tabs(["🌐 Network & Cost Telemetry", "🧠 Prompt Intelligence", "⚖️ Governance & Budgets", "🕵️ Session Explorer"])
+tab1, tab2, tab3, tab4 = st.tabs(["🌐 Network & Cost Telemetry", "🧠 Prompt Intelligence", "⚖️ Governance & Security", "🕵️ Session Explorer"])
 
 # ---------------------------------------------------------
 # TAB 1: NETWORK & COST
@@ -102,9 +100,7 @@ with tab1:
 
     st.subheader("Recent Transactions Log")
     if not df.empty:
-        # Combine prompt and completion tokens for a clean single-column view
         df['total_tokens'] = df['prompt_tokens'] + df['completion_tokens']
-        
         display_df = df[['created_at', 'app_id', 'target_provider', 'total_tokens', 'latency_ms', 'cost_usd', 'is_cached']].copy()
         display_df.rename(columns={
             'created_at': 'Timestamp',
@@ -121,47 +117,67 @@ with tab1:
 # TAB 2: PROMPT INTELLIGENCE
 # ---------------------------------------------------------
 with tab2:
-    st.subheader("Prompt Quality Categorization & Auto-Enhancement")
-    st.markdown("Analyzes inbound queries. Rejects spam (Insufficient), automatically injects context for mid-tier prompts (Needs Context), and allows high-quality prompts to pass untouched (Optimal).")
+    st.subheader("Semantic Categorization & Background Optimization")
+    st.markdown("Prompts are instantly categorized via vector centroids (0ms latency). Sparse 'Draft' prompts are sent to the background worker to generate highly optimized suggestions for the user.")
     
     if df_quality.empty:
         st.info("No prompt quality data recorded yet.")
     else:
-        # Categorical break down
-        optimal_count = len(df_quality[df_quality['category'] == 'OPTIMAL'])
-        enhanced_count = len(df_quality[df_quality['category'] == 'NEEDS_CONTEXT'])
-        rejected_count = len(df_quality[df_quality['category'] == 'INSUFFICIENT'])
+        # We still count the raw metrics directly from the database for accuracy
+        prime_count = len(df_quality[df_quality['category'] == 'PRIME'])
+        draft_count = len(df_quality[df_quality['category'] == 'DRAFT'])
         
-        col_q1, col_q2, col_q3 = st.columns(3)
-        col_q1.metric("Optimal (Passed Directly)", optimal_count)
-        col_q2.metric("Needs Context (Auto-Enhanced)", enhanced_count)
-        col_q3.metric("Insufficient (Rejected)", rejected_count)
+        col_q1, col_q2 = st.columns(2)
+        col_q1.metric("🌟 Prime Prompts (High-Fidelity)", prime_count, help="Passed straight through perfectly.")
+        col_q2.metric("📝 Draft Prompts (Sparse)", draft_count, help="Offloaded to background for optimization.")
         
         st.divider()
-        st.subheader("Intelligence Logging")
+        st.subheader("Async Optimization Log")
         
-        display_quality_df = df_quality[['created_at', 'app_id', 'category', 'is_enhanced', 'original_prompt', 'enhanced_prompt']].copy()
-        display_quality_df['enhanced_prompt'] = display_quality_df.apply(
-            lambda x: x['enhanced_prompt'] if x['is_enhanced'] else "[No Action Needed / Intercepted]", axis=1
-        )
+        display_quality_df = df_quality[['created_at', 'category', 'is_enhanced', 'original_prompt', 'enhanced_prompt']].copy()
+        
+        # FIX: The Dashboard "Sunglasses"
+        # We keep PRIME prompts visible, but we completely HIDE DRAFT prompts until Ollama finishes its job (is_enhanced == True)
+        display_quality_df = display_quality_df[
+            (display_quality_df['category'] == 'PRIME') | 
+            ((display_quality_df['category'] == 'DRAFT') & (display_quality_df['is_enhanced'] == True))
+        ].copy()
+        
+        # Clean up duplicates just in case
+        display_quality_df = display_quality_df.sort_values('created_at', ascending=False).drop_duplicates(subset=['original_prompt', 'category'])
+        
         display_quality_df.rename(columns={
             'created_at': 'Timestamp',
-            'app_id': 'App ID',
             'category': 'Category',
-            'is_enhanced': 'Enhanced?',
-            'original_prompt': 'Original Prompt',
-            'enhanced_prompt': 'Action / Enhanced Output'
+            'original_prompt': 'Original Request',
+            'enhanced_prompt': 'Background Suggestion (For Next Time)'
         }, inplace=True)
+        
+        # Hide the boolean flag from the user interface
+        display_quality_df.drop(columns=['is_enhanced'], inplace=True, errors='ignore')
         
         st.dataframe(display_quality_df, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------
-# TAB 3: GOVERNANCE & BUDGETS
+# TAB 3: GOVERNANCE & SECURITY
 # ---------------------------------------------------------
 with tab3:
-    st.subheader("Active Budget Enforcement")
-    st.markdown("Applications exceeding these hard limits are automatically blocked at the proxy layer (HTTP 429).")
+    st.subheader("🔒 Dynamic DLP Blacklist (Aho-Corasick Fast-Map)")
+    st.markdown("The background AI continuously scans traffic for unmapped entities and adds them here. The proxy masks these at runtime in O(n) time.")
     
+    if df_blacklist.empty:
+        st.info("No custom entities learned yet.")
+    else:
+        col_b1, col_b2 = st.columns([1, 2])
+        with col_b1:
+            st.metric("Total Learned Entities", len(df_blacklist))
+        with col_b2:
+            display_bl = df_blacklist[['created_at', 'original_word', 'mask_tag']].copy()
+            st.dataframe(display_bl, use_container_width=True, hide_index=True)
+    
+    st.divider()
+
+    st.subheader("Active Budget Enforcement")
     if df_budgets.empty:
         st.info("No application budgets registered yet.")
     else:
@@ -180,19 +196,11 @@ with tab3:
 
     st.divider()
     
-    st.subheader("🚨 Incident & Compliance Monitoring Stream")
-    st.markdown("Live feed of cost spikes, rate limit breaches, and DLP (Data Loss Prevention) triggers caught by the gateway.")
-    
+    st.subheader("🚨 Incident & Compliance Alerts")
     if df_alerts.empty:
         st.success("All clear! No anomalies detected recently.")
     else:
         display_alerts = df_alerts[['fired_at', 'alert_type', 'app_id', 'message']].copy()
-        display_alerts.rename(columns={
-            'fired_at': 'Timestamp',
-            'alert_type': 'Alert Type',
-            'app_id': 'Application',
-            'message': 'Anomaly Details'
-        }, inplace=True)
         st.dataframe(display_alerts, use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------
@@ -200,43 +208,32 @@ with tab3:
 # ---------------------------------------------------------
 with tab4:
     st.subheader("🕵️ Centralized Audit Log")
-    st.markdown("Reconstructs the multi-turn context from background logs. **Note: Sessions processed with the `x-opt-out-audit: true` privacy header are strictly omitted.**")
-    
     if df_audit.empty:
-        st.info("No audit logs available. Process traffic without the opt-out header to populate.")
+        st.info("No audit logs available.")
     else:
-        # Select Session
         session_ids = df_audit['session_id'].unique()
         selected_session = st.selectbox("Select a Session ID to replay:", session_ids)
         
-        # Grab the MOST RECENT row for this session, which contains the complete array 
-        # of all messages sent by the client up to the end of the session context.
         session_data = df_audit[df_audit['session_id'] == selected_session].iloc[0]
         
-        # Display Metadata
         colA, colB, colC = st.columns(3)
         colA.metric("Application ID", session_data['app_id'])
         colB.metric("Routing Provider", session_data['provider'].upper())
         colC.metric("Model Executed", session_data['model_used'])
         st.divider()
         
-        # Parse the JSONB message payload
         try:
             msg_data = session_data['messages']
             messages_array = msg_data if isinstance(msg_data, list) else json.loads(msg_data)
         except Exception as e:
-            st.error(f"Failed to parse message history: {e}")
             messages_array = []
             
-        # 1. Render all incoming messages sent by the client (System/User/Assistant history)
         for msg in messages_array:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            
             avatar = "👤" if role == "user" else "⚙️" if role == "system" else "🤖"
             with st.chat_message(role, avatar=avatar):
                 st.markdown(content)
                 
-        # 2. Render the final output produced by the gateway for this specific turn
         with st.chat_message("assistant", avatar="🛡️"):
             st.markdown(f"**Gateway Output (Final Turn):**\n\n{session_data['response']}")
