@@ -200,8 +200,8 @@ async def proxy_chat_completion(
                 headers={"X-Proxy-Intercepted": "True"}
             )
 
-        # For NEEDS_CONTEXT or OPTIMAL, replace with enhanced message if applicable
-        if is_enhanced and user_prompt_index != -1:
+        #Updated Line VB
+        if user_prompt_index != -1:
             sanitized_messages[user_prompt_index].content = final_prompt
     else:
         # BYPASS PI ENGINE: Pass through the DLP-scrubbed prompt untouched
