@@ -3,7 +3,7 @@ import json
 import numpy as np
 from typing import List, Tuple, Dict
 from fastapi import APIRouter, Header, HTTPException, status, BackgroundTasks, Request
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import JSONResponse
 import httpx
 
 # --- Observability & Semantic Conventions ---
@@ -19,8 +19,14 @@ from app.services.prompt_analyzer import prompt_analyzer
 from app.services.budget import budget_service
 from app.services.flag_resolver import resolve_pi_enabled
 
-# FIX: Import the audit service so we can actually log the sessions!
-from app.services.audit_service import audit_service
+# --- Path A Audit Logging Service ---
+try:
+    from app.services.audit_service import audit_service
+except ImportError:
+    # Safe fallback if the file isn't created yet to prevent crashing
+    class DummyAudit:
+        async def log_interaction(self, *args, **kwargs): pass
+    audit_service = DummyAudit()
 
 router = APIRouter(prefix="/v1")
 google_native_router = APIRouter()
@@ -115,16 +121,23 @@ def get_provider_auth(provider: str) -> dict:
     else: 
         return {"Content-Type": "application/json"}
 
-@router.post("/chat/completions", response_class=ORJSONResponse)
+# --- STANDARD OPENAI COMPATIBLE ROUTE ---
+@router.post("/chat/completions")
 async def proxy_chat_completion(
     payload: ChatCompletionRequest,
     background_tasks: BackgroundTasks,
     x_app_id: str = Header(..., description="Internal app identifier"),
     x_bypass_cache: str = Header("false", description="Skip caching"),
     x_session_id: str = Header(None, description="Unique session ID for agent loop isolation"),
-    x_request_type: str = Header("standard", description="Traffic classifier: standard or agent")
+    x_request_type: str = Header("standard", description="Traffic classifier: standard or agent"),
+    x_opt_out_audit: str = Header("false", description="Privacy flag to skip chat history logging"),
+    x_force_provider: str = Header(None, description="Explicitly force a provider (e.g., groq, gemini)"),
+    x_force_model: str = Header(None, description="Explicitly force a specific model string")
 ):
     tracer = trace.get_tracer("ai-proxy-gateway")
+    
+    # Process the opt-out flag securely
+    opt_out_audit = x_opt_out_audit.lower() in ["true", "1", "yes"]
     
     # --- 1. ACTIVE GOVERNANCE: BUDGET & RATE LIMIT ENFORCEMENT ---
     if not budget_service.is_allowed(x_app_id):
@@ -132,7 +145,6 @@ async def proxy_chat_completion(
             span.set_attribute("app.id", x_app_id)
             span.set_attribute("rejection_reason", "429_budget_or_rate_limit")
         
-        # INSTANT STREAMLIT ALERT
         background_tasks.add_task(
             log_security_alert, x_app_id, "RATE_LIMIT_OR_BUDGET", 
             "Application blocked: Hit Request-Per-Minute limit or monthly budget cap."
@@ -146,13 +158,11 @@ async def proxy_chat_completion(
     bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
     
     # --- DYNAMIC CACHE THRESHOLD ---
-    cache_threshold = 0.99 if x_request_type.lower() == "agent" else 0.92
+    cache_threshold = 0.99 if x_request_type.lower() == "agent" else 0.92   
     
-    # --- 2. INGRESS SECURITY: DLP SCAN ---
     sanitized_messages, entities_found, was_modified = dlp_service.scan_and_redact_messages(payload.messages)
     
     if was_modified:
-        # INSTANT STREAMLIT ALERT
         background_tasks.add_task(
             log_security_alert, x_app_id, "DLP_INGRESS_INTERCEPT", 
             f"Blocked sensitive PII in user prompt: {', '.join(entities_found)}"
@@ -172,9 +182,29 @@ async def proxy_chat_completion(
     if pi_should_run:
         category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
         
-        if user_prompt_index != -1:
+        # If the user's prompt is INSUFFICIENT, intercept and return immediately
+        if category == "INSUFFICIENT":
+            latency_ms = round((time.time() - start_time) * 1000, 2)
+            background_tasks.add_task(
+                log_transaction_and_routing, x_app_id, "INTERCEPTED", "LOCAL_ENGINE", 0, 0, latency_ms, False, "Prompt Rejected: INSUFFICIENT", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
+            )
+            
+            return JSONResponse(
+                content={
+                    "id": "chatcmpl-rejected",
+                    "object": "chat.completion",
+                    "model": payload.model,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": "Your request lacks context, is too vague, or is repetitive. Please provide a more specific and detailed prompt."}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                },
+                headers={"X-Proxy-Intercepted": "True"}
+            )
+
+        # For NEEDS_CONTEXT or OPTIMAL, replace with enhanced message if applicable
+        if is_enhanced and user_prompt_index != -1:
             sanitized_messages[user_prompt_index].content = final_prompt
     else:
+        # BYPASS PI ENGINE: Pass through the DLP-scrubbed prompt untouched
         final_prompt = scrubbed_prompt
         category = "SKIPPED"
         is_enhanced = False
@@ -182,10 +212,19 @@ async def proxy_chat_completion(
         
     payload.messages = sanitized_messages
 
-    # --- 4. INTELLIGENT INTENT CLASSIFICATION ---
-    primary_target, routing_reason = intent_classifier.classify(final_prompt, semantic_cache.embedding_model)
+    # --- 4. EXPLICIT ROUTING OVERRIDE VS SEMANTIC ROUTING ---
+    if x_force_provider:
+        primary_target = x_force_provider.lower()
+        routing_reason = f"Explicit Header Override ({primary_target})"
+        
+        if primary_target not in PROVIDER_URLS:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid forced provider '{primary_target}'. Valid options are: {list(PROVIDER_URLS.keys())}"
+            )
+    else:
+        primary_target, routing_reason = intent_classifier.classify(final_prompt, semantic_cache.embedding_model)
 
-    # --- 5. CACHE CHECK (With Session Isolation) ---
     if not bypass_cache:
         cached_response = semantic_cache.query_cache(
             messages=payload.messages, 
@@ -194,22 +233,25 @@ async def proxy_chat_completion(
         )
         if cached_response:
             latency_ms = round((time.time() - start_time) * 1000, 2)
+            
+            # Standard Cost Telemetry
             background_tasks.add_task(
                 log_transaction_and_routing, x_app_id, primary_target, primary_target, 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
             )
             
-            # FIX: Execute Audit Logging for Cache Hits
-            background_tasks.add_task(
-                audit_service.log_interaction,
-                session_id=x_session_id or "stateless-session",
-                app_id=x_app_id,
-                provider="cache",
-                model_used="qdrant-semantic-cache",
-                messages=[{"role": msg.role, "content": msg.content} for msg in payload.messages],
-                response_text=cached_response,
-                prompt_tokens=0,
-                completion_tokens=0
-            )
+            # --- PATH A STATELESS AUDIT LOGGING (CACHE HIT) ---
+            if not opt_out_audit:
+                background_tasks.add_task(
+                    audit_service.log_interaction,
+                    session_id=x_session_id or "stateless-session",
+                    app_id=x_app_id,
+                    provider="qdrant_cache",
+                    model_used=payload.model,
+                    messages=payload.model_dump()["messages"],
+                    response_text=cached_response,
+                    prompt_tokens=0,
+                    completion_tokens=0
+                )
             
             with tracer.start_as_current_span("semantic_cache_hit") as span:
                 span.set_attribute(SpanAttributes.OPENINFERENCE_SPAN_KIND, OpenInferenceSpanKindValues.LLM.value)
@@ -223,7 +265,7 @@ async def proxy_chat_completion(
                 span.set_attribute("llm.output_messages.0.message.role", "assistant")
                 span.set_attribute("llm.output_messages.0.message.content", cached_response)
 
-            return ORJSONResponse(
+            return JSONResponse(
                 content={
                     "id": "chatcmpl-cached",
                     "object": "chat.completion",
@@ -234,7 +276,6 @@ async def proxy_chat_completion(
                 headers={"X-Proxy-Cache-Hit": "True", "X-Routed-To": "CACHE"}
             )
 
-    # --- 6. NETWORK FORWARDING WITH FALLBACKS ---
     providers_to_try = FALLBACK_PRIORITY.get(primary_target, ["ollama", "groq", "gemini"])
     fallback_used = False
     actual_routing_reason = routing_reason
@@ -245,12 +286,18 @@ async def proxy_chat_completion(
         current_timeout = PROVIDER_TIMEOUTS.get(current_provider, 30.0)
         
         temp_payload = payload.model_dump()
-        if current_provider == "ollama":
-            temp_payload["model"] = settings.OLLAMA_MODEL
-        elif current_provider == "groq":
-            temp_payload["model"] = "llama-3.1-8b-instant" 
-        elif current_provider == "gemini":
-            temp_payload["model"] = "gemini-1.5-flash"
+        
+        # --- 5. EXPLICIT MODEL INJECTION ---
+        if x_force_model:
+            temp_payload["model"] = x_force_model
+        else:
+            # Default model fallbacks pulling dynamically from .env settings
+            if current_provider == "ollama":
+                temp_payload["model"] = getattr(settings, 'OLLAMA_MODEL', "llama3")
+            elif current_provider == "groq":
+                temp_payload["model"] = getattr(settings, 'GROQ_DEFAULT_MODEL', "llama-3.1-8b-instant")
+            elif current_provider == "gemini":
+                temp_payload["model"] = getattr(settings, 'GEMINI_DEFAULT_MODEL', "gemini-3.1-flash-lite")
 
         if fallback_used:
             actual_routing_reason = f"Fallback trigger (Original target: {primary_target})"
@@ -274,7 +321,7 @@ async def proxy_chat_completion(
                             fallback_used = True
                             continue 
                         else:
-                            return ORJSONResponse(content=response.json(), status_code=response.status_code)
+                            return JSONResponse(content=response.json(), status_code=response.status_code)
 
                     response_json = response.json()
                     usage = response_json.get("usage", {})
@@ -315,20 +362,21 @@ async def proxy_chat_completion(
                         scrubbed_prompt, final_prompt, category, is_enhanced, issues
                     )
 
-                    # FIX: Execute Audit Logging for standard Network requests
-                    background_tasks.add_task(
-                        audit_service.log_interaction,
-                        session_id=x_session_id or "stateless-session",
-                        app_id=x_app_id,
-                        provider=current_provider,
-                        model_used=temp_payload["model"],
-                        messages=temp_payload["messages"],
-                        response_text=assistant_text,
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens
-                    )
+                    # --- PATH A STATELESS AUDIT LOGGING (NETWORK HIT) ---
+                    if not opt_out_audit:
+                        background_tasks.add_task(
+                            audit_service.log_interaction,
+                            session_id=x_session_id or "stateless-session",
+                            app_id=x_app_id,
+                            provider=current_provider,
+                            model_used=temp_payload["model"],
+                            messages=payload.model_dump()["messages"],
+                            response_text=assistant_text,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens
+                        )
 
-                    return ORJSONResponse(
+                    return JSONResponse(
                         content=response_json,
                         status_code=response.status_code,
                         headers={
@@ -346,33 +394,166 @@ async def proxy_chat_completion(
                     raise HTTPException(status_code=504, detail=f"Network failure on all fallbacks: {str(exc)}")
 
 
-# --- NATIVE GOOGLE SDK PASSTHROUGH ROUTE ---
-@google_native_router.post("/{api_version}/models/{model_name}:{action}", response_class=ORJSONResponse)
+# --- NATIVE GOOGLE SDK PASSTHROUGH ROUTE (ADK AGENTS) ---
+@google_native_router.post("/{api_version}/models/{full_model_path:path}")
 async def google_native_passthrough(
     api_version: str,
-    model_name: str,
-    action: str,
+    full_model_path: str,
     request: Request,
     background_tasks: BackgroundTasks,
     x_app_id: str = Header("adk-default-app", description="Internal app identifier"),
-    x_target_provider: str = Header("gemini", description="Target LLM provider")
+    x_bypass_cache: str = Header("false", description="Skip caching"),
+    x_session_id: str = Header(None, description="Unique session ID for agent loop isolation"),
+    x_request_type: str = Header("standard", description="Traffic classifier: standard or agent"),
+    x_opt_out_audit: str = Header("false", description="Opt out of audit logging")
 ):
+    # Process the opt-out flag securely
+    opt_out_audit = x_opt_out_audit.lower() in ["true", "1", "yes"]
+    
+    if not budget_service.is_allowed(x_app_id):
+        background_tasks.add_task(
+            log_security_alert, x_app_id, "RATE_LIMIT_OR_BUDGET", 
+            "Application blocked: Hit Request-Per-Minute limit or monthly budget cap."
+        )
+        raise HTTPException(status_code=429, detail="HTTP 429: Application budget exceeded.")
+
     start_time = time.time()
     raw_payload = await request.json()
-    target_url = f"https://generativelanguage.googleapis.com/{api_version}/models/{model_name}:{action}"
+    target_url = f"https://generativelanguage.googleapis.com/{api_version}/models/{full_model_path}"
+    bypass_cache = x_bypass_cache.lower() in ["true", "1", "yes"]
+    cache_threshold = 0.90 if x_request_type.lower() == "agent" else 0.92
     
     headers = {
         "Content-Type": "application/json",
         "x-goog-api-key": settings.GEMINI_API_KEY
     }
+
+    # --- 1. EXTRACT NATIVE PAYLOAD FOR PROCESSING ---
+    user_text = ""
+    try:
+        user_text = raw_payload.get("contents", [])[-1].get("parts", [])[0].get("text", "")
+    except Exception:
+        pass
+
+    is_enhanced = False
+    category = "SKIPPED" 
+    issues = []
+    final_prompt = user_text
+    scrubbed_prompt = user_text
+
+    if user_text:
+        # INGRESS DLP SCAN
+        scrubbed_prompt = dlp_service.scan_and_redact_text(user_text)
+        if scrubbed_prompt != user_text:
+            background_tasks.add_task(
+                log_security_alert, x_app_id, "DLP_INGRESS_INTERCEPT", "Blocked sensitive PII in native Google payload."
+            )
+        
+        # DYNAMIC PROMPT INTELLIGENCE FLAG CHECK
+        pi_should_run = await resolve_pi_enabled(x_app_id)
+
+        if pi_should_run:
+            # PROMPT INTELLIGENCE
+            category, final_prompt, is_enhanced, issues = await prompt_analyzer.analyze_and_enhance(scrubbed_prompt, x_app_id)
+            
+            # RE-INJECT SAFE/ENHANCED TEXT
+            try:
+                raw_payload["contents"][-1]["parts"][0]["text"] = final_prompt
+            except Exception:
+                pass
+        else:
+            final_prompt = scrubbed_prompt
+            category = "SKIPPED"
+            # RE-INJECT DLP SCRUBBED TEXT
+            try:
+                raw_payload["contents"][-1]["parts"][0]["text"] = scrubbed_prompt
+            except Exception:
+                pass
+
+    # --- 2. CACHE CHECK ---
+    dummy_messages = [ChatMessage(role="user", content=final_prompt)] if final_prompt else []    
+    if not bypass_cache and dummy_messages:
+        cached_response = semantic_cache.query_cache(messages=dummy_messages, threshold=cache_threshold, session_id=x_session_id)
+        if cached_response:
+            latency_ms = round((time.time() - start_time) * 1000, 2)
+            background_tasks.add_task(
+                log_transaction_and_routing, x_app_id, "gemini", "gemini", 0, 0, latency_ms, True, "Cache Hit", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
+            )
+            
+            mock_native_response = {
+                "candidates": [
+                    {
+                        "content": {"parts": [{"text": cached_response}], "role": "model"},
+                        "finishReason": "STOP"
+                    }
+                ],
+                "usageMetadata": {"promptTokenCount": 0, "candidatesTokenCount": 0, "totalTokenCount": 0}
+            }
+            
+            return JSONResponse(
+                content=mock_native_response,
+                headers={"X-Proxy-Cache-Hit": "True", "X-Routed-To": "CACHE", "X-Proxy-Latency-Ms": str(latency_ms)}
+            )
     
+    # --- 3. NETWORK FORWARDING ---
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             response = await client.post(target_url, json=raw_payload, headers=headers)
             latency_ms = round((time.time() - start_time) * 1000, 2)
             
-            return ORJSONResponse(
-                content=response.json(),
+            if response.status_code != 200:
+                return JSONResponse(content=response.json(), status_code=response.status_code)
+
+            response_json = response.json()
+            
+            usage = response_json.get("usageMetadata", {})
+            prompt_tokens = usage.get("promptTokenCount", 0)
+            completion_tokens = usage.get("candidatesTokenCount", 0)
+            
+            # --- 4. EGRESS DLP SCAN & CACHE UPDATE ---
+            raw_assistant_text = ""
+            try:
+                raw_assistant_text = response_json.get("candidates", [])[0].get("content", {}).get("parts", [])[0].get("text", "")
+            except Exception:
+                pass
+
+            if raw_assistant_text:
+                assistant_text = dlp_service.scan_and_redact_text(raw_assistant_text)
+                if assistant_text != raw_assistant_text:
+                    background_tasks.add_task(
+                        log_security_alert, x_app_id, "DLP_EGRESS_INTERCEPT", "Redacted sensitive PII generated by Gemini."
+                    )
+                    try:
+                        response_json["candidates"][0]["content"]["parts"][0]["text"] = assistant_text
+                    except Exception:
+                        pass
+                
+                if not bypass_cache and dummy_messages:
+                    semantic_cache.update_cache(dummy_messages, assistant_text, session_id=x_session_id)
+            
+            background_tasks.add_task(
+                log_transaction_and_routing, 
+                x_app_id, "gemini", "gemini", prompt_tokens, completion_tokens, latency_ms, False, "Native ADK Passthrough", False, scrubbed_prompt, final_prompt, category, is_enhanced, issues
+            )
+
+            # --- STATLESS AUDIT LOGGING FOR NATIVE ROUTE ---
+            if not opt_out_audit and dummy_messages: 
+                audit_messages = [{"role": msg.role, "content": msg.content} for msg in dummy_messages]
+                
+                background_tasks.add_task(
+                    audit_service.log_interaction,
+                    session_id=x_session_id or "stateless-session",
+                    app_id=x_app_id,
+                    provider="gemini",
+                    model_used=full_model_path,
+                    messages=audit_messages,
+                    response_text=assistant_text if raw_assistant_text else "",
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens
+                )
+
+            return JSONResponse(
+                content=response_json,
                 status_code=response.status_code,
                 headers={"X-Proxy-Latency-Ms": str(latency_ms)}
             )

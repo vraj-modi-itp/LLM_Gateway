@@ -1,0 +1,269 @@
+(.venv) PS C:\Users\SumitMishra(CloudPla\Codespace\LLM_Gateway\tests> python .\test_proxy.py
+
+============================================================
+🚀 RUNNING TEST: 1. Low-Stakes Routing (Expect: OLLAMA)
+============================================================
+🤖 LLM Answer: Canberra
+
+📊 --- Telemetry ---
+⏱️ Latency        : 11875.54 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 2. Explicit Code Intent (Expect: GROQ)
+============================================================
+🤖 LLM Answer: Assuming you have two tables: `users` and `orders`, and the `orders` table has a column named `order_total`, here is the SQL query:  ```sql SELECT * F...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 53547.75 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 3. Nuanced Code Intent (Expect: GROQ - Semantic router should catch this via centroid)
+============================================================
+🤖 LLM Answer: The history of Object-Oriented Programming (OOP) is a transition from viewing computers as **calculators** (numbers in, numbers out) to viewing them a...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 14749.31 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GEMINI
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 4. Exact Cache Match (Expect: CACHE HIT)
+============================================================
+🤖 LLM Answer: Assuming you have two tables: `users` and `orders`, and the `orders` table has a column named `order_total`, here is the SQL query:  ```sql SELECT * F...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 5260.7 ms
+⚡ Cache Hit      : True
+🔀 Routed To      : CACHE
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 5. Semantic Cache Match (Expect: CACHE HIT - Different words, same meaning!)
+============================================================
+🤖 LLM Answer: Assuming you have two tables: `users` and `orders`, and the `orders` table has a column named `order_total`, here is the SQL query:  ```sql SELECT * F...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 4800.27 ms
+⚡ Cache Hit      : True
+🔀 Routed To      : CACHE
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 6. Cache Bypass Header (Expect: GROQ - Forced Network Call)
+============================================================
+📝 Injecting Custom Headers: {'x-bypass-cache': 'true'}
+🤖 LLM Answer: **Joining Users and Orders Tables in SQL** =============================================  To join the `users` and `orders` tables in a way that only i...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 9310.65 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 7. Multi-Entity PII Attack (Expect: Redaction of all 3 entities)
+============================================================
+🤖 LLM Answer: I cannot process or store sensitive personal information like your Social Security number or credit card details. As an AI, I do not have access to yo...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 17452.35 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GEMINI
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 8. DLP + Cache Intersection (Expect: CACHE HIT on redacted template!)
+============================================================
+🤖 LLM Answer: I cannot process or store sensitive personal information like your Social Security number or credit card details. As an AI, I do not have access to yo...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 6424.8 ms
+⚡ Cache Hit      : True
+🔀 Routed To      : CACHE
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 9. Empty / Whitespace Prompt (Expect: Graceful handling by default route)
+============================================================
+🤖 LLM Answer: It looks like your message was blank. How can I help you today?
+
+📊 --- Telemetry ---
+⏱️ Latency        : 15754.88 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GEMINI
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 10. High-Volume Standard Routing (Expect: Semantic router decides - likely OLLAMA/GEMINI)
+============================================================
+🤖 LLM Answer: It appears that you've entered a large quantity of repetitive text consisting of the word "apple."  If you're looking for information on apples, I'd b...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 5317.63 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 11. Hard Limit Override Routing (Expect: Forced to GEMINI due to >800 word count)
+============================================================
+🤖 LLM Answer: It appears that you've entered a large quantity of repetitive text consisting of the word "apple."  If you're looking for information on apples, I'd b...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 3378.16 ms
+⚡ Cache Hit      : True
+🔀 Routed To      : CACHE
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 12. The Rambling Wall (Expect: Low Score, Auto-Enhanced with Context)
+============================================================
+📝 Injecting Custom Headers: {'x-bypass-cache': 'true'}
+🤖 LLM Answer: I'd be happy to build something cool for you! However, I'm a large language model, I don't have the capability to physically build things. I can creat...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 108274.24 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 13. Short But Perfect (Expect: Max Score, No Enhancement needed)
+============================================================
+📝 Injecting Custom Headers: {'x-bypass-cache': 'true'}
+🤖 LLM Answer: **Joining Users and Orders in SQL** =====================================================  This example assumes we have two tables, `users` and `order...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 19830.68 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 14. DLP + Enhancement Safety (Expect: Email redacted BEFORE enhancement injection)
+============================================================
+📝 Injecting Custom Headers: {'x-app-id': 'sales_assistant', 'x-bypass-cache': 'true'}
+🤖 LLM Answer: To make sure this looks professional, I have drafted a clean, polished email template for you.  **Please make sure you have the report file ready to a...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 22198.72 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GEMINI
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+[+] Starting simulated Agent Run with Session ID: f61299d4-dfc0-4c89-b89d-98bc049689ff
+
+============================================================
+🚀 RUNNING TEST: 15. Agent Step 1 (Expect: NETWORK MISS, saves to Qdrant with Session ID)
+============================================================
+📝 Injecting Custom Headers: {'x-request-type': 'agent', 'x-session-id': 'f61299d4-dfc0-4c89-b89d-98bc049689ff'}
+🤖 LLM Answer: The square root of 144 is:  √144 = 12
+
+📊 --- Telemetry ---
+⏱️ Latency        : 25497.19 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 16. Agent Step 2 (Expect: NETWORK MISS. Blocked from hitting Step 1 by Session Isolation!)
+============================================================
+📝 Injecting Custom Headers: {'x-request-type': 'agent', 'x-session-id': 'f61299d4-dfc0-4c89-b89d-98bc049689ff'}
+🤖 LLM Answer: To calculate the square root of 144, we'll use the mathematical formula √x = y, where x is the number (144) and y is the square root.  √144 = ? (We al...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 5376.9 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+[+] Starting NEW run tomorrow with Session ID: 4935009d-ba01-4ce1-9945-97dbe70048a7
+
+============================================================
+🚀 RUNNING TEST: 17. New User Request (Expect: CACHE HIT. Allowed to pull from previous isolated sessions)
+============================================================
+📝 Injecting Custom Headers: {'x-request-type': 'standard', 'x-session-id': '4935009d-ba01-4ce1-9945-97dbe70048a7'}
+🤖 LLM Answer: The square root of 144 is:  √144 = 12
+
+📊 --- Telemetry ---
+⏱️ Latency        : 6188.52 ms
+⚡ Cache Hit      : True
+🔀 Routed To      : CACHE
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 18. Vague/Impossible Request (Expect: Intercepted as INSUFFICIENT)
+============================================================
+📝 Injecting Custom Headers: {'x-bypass-cache': 'true'}
+🤖 LLM Answer: I'm happy to help! However, I need a bit more context on what you want me to "make work" and how quickly you need it done. Can you please provide some...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 47385.97 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 19. Basic Text Task (Expect: Enhanced as NEEDS_CONTEXT)
+============================================================
+📝 Injecting Custom Headers: {'x-app-id': 'sales_assistant', 'x-bypass-cache': 'true'}
+🤖 LLM Answer: Here is a short update message you can send to your team:  "Hey Team, Just wanted to touch base and give you all an update on our current projects. We...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 133687.58 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 20. Bare-Bones Coding Task (Expect: Enhanced as NEEDS_CONTEXT)
+============================================================
+📝 Injecting Custom Headers: {'x-bypass-cache': 'true'}
+🤖 LLM Answer: Here is a simple script in Python that prints a greeting: ``` print("Hello!") ``` This script uses the built-in `print` function to output the string ...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 174184.48 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : OLLAMA
+🛡️ Fallback Used  : False
+🛑 Intercepted    : False
+
+============================================================
+🚀 RUNNING TEST: 21. Highly Specific/Architectural (Expect: Passthrough as OPTIMAL)
+============================================================
+📝 Injecting Custom Headers: {'x-bypass-cache': 'true'}
+🤖 LLM Answer: **Designing a Multi-Tenant Person Adapter Interface** ======================================================  In a scalable B2B SaaS e-commerce platfo...
+
+📊 --- Telemetry ---
+⏱️ Latency        : 188509.37 ms
+⚡ Cache Hit      : False
+🔀 Routed To      : GROQ
+🛡️ Fallback Used  : True
+🛑 Intercepted    : False
+(.venv) PS C:\Users\SumitMishra(CloudPla\Codespace\LLM_Gateway\tests> 
