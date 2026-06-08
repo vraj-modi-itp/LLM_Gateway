@@ -286,6 +286,9 @@ async def proxy_chat_completion(
         current_timeout = PROVIDER_TIMEOUTS.get(current_provider, 30.0)
         
         temp_payload = payload.model_dump()
+
+        # ✅ RESTORED FIX: Force providers to return a single JSON block (lost during merge)
+        temp_payload["stream"] = False
         
         # --- 5. EXPLICIT MODEL INJECTION ---
         if x_force_model:
@@ -364,7 +367,8 @@ async def proxy_chat_completion(
                         span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_COMPLETION, completion_tokens)
                         span.set_attribute(SpanAttributes.LLM_TOKEN_COUNT_TOTAL, prompt_tokens + completion_tokens)
 
-                        if assistant_text and not bypass_cache:
+                       # ✅ FIX: Always write to the cache (Write-Through), even if bypass_cache is true
+                        if assistant_text:
                             semantic_cache.update_cache(payload.messages, assistant_text, session_id=x_session_id)
 
                     latency_ms = round((time.time() - start_time) * 1000, 2)
