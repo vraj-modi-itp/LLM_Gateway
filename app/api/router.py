@@ -321,9 +321,22 @@ async def proxy_chat_completion(
                             fallback_used = True
                             continue 
                         else:
-                            return JSONResponse(content=response.json(), status_code=response.status_code)
+                            # ✅ FIX: Safely attempt to parse the error as JSON.
+                            try:
+                                error_content = response.json()
+                            except Exception:
+                                # If it's plain text (like a 401 or 502), package it securely
+                                error_content = {"detail": f"Upstream Error: {response.text}"}
+                                
+                            return JSONResponse(content=error_content, status_code=response.status_code)
 
-                    response_json = response.json()
+                    try:
+                        response_json = response.json()
+                    except Exception:
+                        # If the provider sends back a 200 OK but the body is empty/broken
+                        error_msg = f"Provider '{current_provider}' returned invalid JSON. Status: {response.status_code}, Body: '{response.text}'"
+                        print(f"🚨 {error_msg}")
+                        raise HTTPException(status_code=502, detail=error_msg)
                     usage = response_json.get("usage", {})
                     prompt_tokens = usage.get("prompt_tokens", 0)
                     completion_tokens = usage.get("completion_tokens", 0)
